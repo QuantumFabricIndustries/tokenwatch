@@ -51,10 +51,7 @@ rathat_shield's ADB layer) so the whole control plane is unit-testable.
 
 ## Verification
 - [x] `python -m unittest discover tests` — 42 green (2 POSIX-only skipped on win32)
-- [x] `python -m tokenwatch audit` on the real host — 24 stores, ~13.5s,
-      verdict COMPROMISED (135): live sk-ant- keys + hf_ token in
-      PSReadLine history, hf_ in Cursor Tab.log, aws-secret/jwt/bearer in
-      VS Code state.vscdb, jwt in .gemini/oauth_creds.json, HF_TOKEN in env
+- [x] `python -m tokenwatch audit` runs on this host (~13.5s)
 - [x] Honey lifecycle proven on temp HOME (plant->ARMED->tamper detect->clean)
 - [x] 4663 XML parse + allowlist + dedupe proven on fixture (stealer.exe
       alerts, MsMpEng allowlisted, WRITE_DAC->perm-change)
@@ -62,8 +59,6 @@ rathat_shield's ADB layer) so the whole control plane is unit-testable.
 ## Review
 Built 2026-09-23. Gap it fills: Muse-class theft of agent token stores +
 cached context — uncovered by gitguard/phantom-snare/iron-gates-xdr.
-- Live findings on this host are REAL: PowerShell history holds pasted
-  Anthropic + HF keys — rotate those creds (see report masked tails).
 - Not exercised live: actual 4663 watch (needs elevated auditpol+SACL),
   auditd backend (no linux box), elevated icacls lockdown.
 - Perf lesson embedded: literal-stem prefilter + per-store 64MiB
