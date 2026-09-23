@@ -45,6 +45,15 @@ config-shaped files, `mcp-plaintext-key` (+30) in MCP configs,
 `context-secret` (+35) for leaks into transcripts/logs/history. Identical
 secret values dedupe per file.
 
+`.env` files are never "expected storage". Inside a git work tree a
+secret-bearing `.env` is `repo-secret` (+40, cap 80) when the file is
+tracked or not gitignored — either way it ships to the remote; a gitignored
+`.env` stays `plaintext-token` (+25). Detection walks parents for `.git`
+and shells out to `git ls-files --error-unmatch` / `git check-ignore -q`;
+without git it degrades to `plaintext-token` with a "git unavailable" note.
+`.env.example`/`.env.sample` are scanned too — doc-example values are
+filtered, real-format keys still count.
+
 **watch** — real-time read detection on all sensitive stores + honeytokens:
 
 - **Windows** (primary): `auditpol` File-System success + a `Success` SACL

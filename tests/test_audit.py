@@ -198,6 +198,106 @@ class TestClassification(unittest.TestCase):
         self.assertIn("350 -> 70", rep.to_text())
 
 
+class GitRunner(Runner):
+    """Fake git: ls-files -> ls_rc, check-ignore -> ign_rc, 127 = missing."""
+    def __init__(self, ls_rc=1, ign_rc=1):
+        super().__init__()
+        self.ls_rc = ls_rc
+        self.ign_rc = ign_rc
+
+    def run(self, argv, timeout=30):
+        self.calls.append(list(argv))
+        if argv[0] == "git":
+            if "ls-files" in argv:
+                return self.ls_rc, "", ""
+            if "check-ignore" in argv:
+                return self.ign_rc, "", ""
+            return 0, "", ""
+        return 0, "", ""
+
+
+class GitMissingRunner(Runner):
+    def run(self, argv, timeout=30):
+        self.calls.append(list(argv))
+        if argv[0] == "git":
+            return 127, "", "git: command not found"
+        return 0, "", ""
+
+
+class TestEnvClassification(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.home = Path(self.td.name)
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _env_file(self, subdir="proj", git=False):
+        d = self.home / subdir
+        d.mkdir(parents=True, exist_ok=True)
+        if git:
+            (d / ".git").mkdir()
+        f = d / ".env"
+        f.write_text("KEY=sk-ant-api03-" + "a1B2c3D4" * 6 + "\n")
+        return f
+
+    def test_env_outside_repo(self):
+        f = self._env_file()
+        rule, detail = cli._hit_rule(f, "config", runner=GitRunner())
+        self.assertEqual(rule, "plaintext-token")
+
+    def test_env_in_repo_gitignored(self):
+        f = self._env_file(git=True)
+        r = GitRunner(ls_rc=1, ign_rc=0)          # untracked + ignored
+        rule, detail = cli._hit_rule(f, "config", runner=r)
+        self.assertEqual(rule, "plaintext-token")
+        self.assertEqual(detail, "gitignored")
+
+    def test_env_in_repo_tracked(self):
+        f = self._env_file(git=True)
+        r = GitRunner(ls_rc=0)                    # tracked
+        rule, detail = cli._hit_rule(f, "config", runner=r)
+        self.assertEqual(rule, "repo-secret")
+        self.assertEqual(detail, "tracked")
+
+    def test_env_in_repo_not_ignored(self):
+        f = self._env_file(git=True)
+        r = GitRunner(ls_rc=1, ign_rc=1)          # untracked + not ignored
+        rule, detail = cli._hit_rule(f, "config", runner=r)
+        self.assertEqual(rule, "repo-secret")
+        self.assertEqual(detail, "not gitignored")
+
+    def test_env_git_missing(self):
+        f = self._env_file(git=True)
+        rule, detail = cli._hit_rule(f, "config", runner=GitMissingRunner())
+        self.assertEqual(rule, "plaintext-token")
+        self.assertIn("git unavailable", detail)
+
+    def test_env_example_not_stored_session(self):
+        f = self._env_file()
+        ex = f.with_name(".env.example")
+        f.rename(ex)
+        rule, _ = cli._hit_rule(ex, "config", runner=GitRunner())
+        self.assertNotEqual(rule, "stored-session")
+
+    def test_oauth_creds_still_stored_session(self):
+        f = self.home / ".gemini" / "oauth_creds.json"
+        f.parent.mkdir()
+        f.write_text("{}")
+        rule, _ = cli._hit_rule(f, "token", runner=GitRunner())
+        self.assertEqual(rule, "stored-session")
+
+    def test_env_in_repo_e2e(self):
+        """full pipeline: .env inside a repo under a scanned store."""
+        store = self.home / ".codex"
+        repo = store / "proj"
+        (repo / ".git").mkdir(parents=True)
+        (repo / ".env").write_text("K=sk-ant-api03-" + "a1B2c3D4" * 6)
+        rep = cli._run_audit(fake_env(self.home), runner=GitRunner(ls_rc=0))
+        self.assertTrue(any(f.rule == "repo-secret" and "tracked"
+                            in f.detail for f in rep.findings))
+
+
 class TestAuditE2E(unittest.TestCase):
     def test_audit_clean_home(self):
         with tempfile.TemporaryDirectory() as td:

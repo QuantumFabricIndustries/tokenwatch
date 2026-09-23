@@ -24,6 +24,7 @@ RULE_WEIGHTS = {
     "perm-acl-foreign":    40,
     "plaintext-token":     25,   # secret where it doesn't belong
     "mcp-plaintext-key":   30,
+    "repo-secret":         40,   # .env tracked by / not ignored by git
     "context-secret":      35,   # secret leaked into transcripts/history
     "env-secret":           5,   # API key in process env — inherited widely
     "honey-missing":       10,
@@ -40,7 +41,7 @@ FORCE_COMPROMISED = {"honeytoken-read", "unauthorized-read",
 # per-rule caps so one noisy rule can't dominate
 RULE_CAPS = {"plaintext-token": 60, "context-secret": 70,
              "perm-loose-file": 80, "perm-acl-foreign": 80,
-             "stored-session": 20}
+             "stored-session": 20, "repo-secret": 80}
 
 
 @dataclass

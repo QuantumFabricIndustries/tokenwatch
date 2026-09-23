@@ -9,6 +9,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -63,9 +64,11 @@ def _run_audit(env, runner=None, extra_dirs=(), fix=False):
             if key in seen:
                 continue
             seen.add(key)
-            rep.findings.append(Finding(
-                _hit_rule(Path(f), kind), str(hit.path),
-                f"{hit.pattern} line {hit.line or '-'} {hit.masked}"))
+            rule, extra = _hit_rule(f, kind, env=env, runner=runner)
+            detail = f"{hit.pattern} line {hit.line or '-'} {hit.masked}"
+            if extra:
+                detail += f" - {extra}"
+            rep.findings.append(Finding(rule, str(hit.path), detail))
 
     # 3. env exposure
     for name in ENV_SECRET_NAMES:
@@ -95,7 +98,7 @@ _EXPECTED_CRED_NAMES = {
     "msal_token_cache.bin", "msal_token_cache.json", "state.vscdb",
     ".netrc", "_netrc", ".git-credentials", ".npmrc", ".yarnrc",
     ".pypirc", "token", "google_accounts.json", "apps.json",
-    "config.json", ".env", ".envrc", "settings.xml",
+    "config.json", ".envrc", "settings.xml",
     "gradle.properties", "nuget.config",
 }
 _KEY_PREFIXES = ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa")
@@ -118,32 +121,78 @@ def _spec_kind(path, resolved):
     return best.spec.kind if best else "context"
 
 
-def _hit_rule(path, spec_kind):
+_ENV_NAME_RE = re.compile(r"^\.env(\..*)?$", re.IGNORECASE)
+
+
+def _find_repo(path):
+    """Walk parents for a .git dir/file (worktrees use a .git file)."""
+    for d in path.parents:
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def _env_rule(path, runner=None):
+    """.env files are never 'expected storage' — repo membership decides."""
+    repo = _find_repo(path)
+    if repo is None:
+        return "plaintext-token", ""
+    if runner is None and not platforms.which("git"):
+        return "plaintext-token", "git unavailable"
+    rel = os.path.relpath(str(path), str(repo))
+    rc, _, _ = platforms.run(
+        ["git", "-C", str(repo), "ls-files", "--error-unmatch", rel],
+        runner=runner)
+    if rc == 127:
+        return "plaintext-token", "git unavailable"
+    if rc == 0:
+        return "repo-secret", "tracked"
+    rc, _, _ = platforms.run(
+        ["git", "-C", str(repo), "check-ignore", "-q", rel], runner=runner)
+    if rc == 127:
+        return "plaintext-token", "git unavailable"
+    if rc == 0:
+        return "plaintext-token", "gitignored"
+    return "repo-secret", "not gitignored"
+
+
+def _hit_rule(path, spec_kind, env=None, runner=None):
+    """-> (rule, detail_extra). .env classification is repo-aware."""
     name = path.name.lower()
+    if _ENV_NAME_RE.match(name):
+        return _env_rule(path, runner=runner)
     if name in _MCP_NAMES:
-        return "mcp-plaintext-key"
+        return "mcp-plaintext-key", ""
     if any(part.lower() in _CONTEXTISH for part in path.parts):
-        return "context-secret"
+        return "context-secret", ""
     if name in _EXPECTED_CRED_NAMES or name.startswith(_KEY_PREFIXES):
-        return "stored-session"
+        return "stored-session", ""
     if spec_kind == "context":
-        return "context-secret"
+        return "context-secret", ""
     if spec_kind in ("token", "key"):
-        return "stored-session"      # inside a credential store = expected
-    return "plaintext-token"
+        return "stored-session", ""   # inside a credential store = expected
+    return "plaintext-token", ""
 
 
 def cmd_audit(a):
     env = dict(os.environ)
     rep = _run_audit(env, fix=a.fix)
     if a.extra_dir:
+        seen = set()
         for d in a.extra_dir:
             for f in Path(d).rglob("*"):
-                if f.is_file():
-                    for hit in secrets.scan_file(f):
-                        rep.findings.append(Finding(
-                            "plaintext-token", str(hit.path),
-                            f"{hit.pattern} {hit.masked}"))
+                if not f.is_file():
+                    continue
+                for hit in secrets.scan_file(f):
+                    key = (str(hit.path), hit.fp)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rule, extra = _hit_rule(f, "config", env=env)
+                    detail = f"{hit.pattern} {hit.masked}"
+                    if extra:
+                        detail += f" - {extra}"
+                    rep.findings.append(Finding(rule, str(hit.path), detail))
         rep.finalize()
     _emit(rep, a.json, a.out)
     return 1 if rep.score >= 50 else 0
