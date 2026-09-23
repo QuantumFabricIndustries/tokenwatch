@@ -71,16 +71,129 @@ class TestWindowsBackend(unittest.TestCase):
         self.assertIn("EventRecordID > 99104", qs[-1])
 
     def test_install_runs_auditpol_and_sacl(self):
+        with tempfile.TemporaryDirectory() as td:
+            r = FakeRunner()
+            be = watch.WindowsEventBackend([ROOT], runner=r,
+                                           env={"HOME": td})
+            be.install()
+            tools = {c[0] for c in r.calls}
+            self.assertIn("auditpol", tools)
+            self.assertIn("powershell", tools)
+            self.assertIn("reg", tools)      # cmdline-in-4688 value
+            sacl = [c for c in r.calls if c[0] == "powershell"]
+            self.assertTrue(any("AddAuditRule" in c[-1] for c in sacl))
+            # files can't take inheritance flags — script must branch
+            self.assertTrue(any("PSIsContainer" in c[-1] for c in sacl))
+            # process-creation auditing + command-line capture enabled
+            ap = [c for c in r.calls if c[0] == "auditpol"]
+            self.assertTrue(any(watch.PROC_CREATION_GUID in " ".join(c)
+                                and "/success:enable" in c for c in ap))
+            self.assertTrue(any("ProcessCreationIncludeCmdLine_Enabled"
+                                in " ".join(c) for c in r.calls
+                                if c[0] == "reg"))
+
+
+FIXTURE_4688 = Path(__file__).parent / "fixtures" / "wevtutil_4688.xml"
+
+
+class Test4688Parsing(unittest.TestCase):
+    """Process-creation events: persist after the process exits (a
+    snapshot misses it) and carry the creator's real name."""
+
+    def _evs(self):
+        be = watch.WindowsEventBackend([ROOT], runner=FakeRunner())
+        return be._parse(FIXTURE_4688.read_text(encoding="utf-8"))
+
+    def test_real_profile_debug_launch(self):
+        dl = [e for e in self._evs() if e.access == "debug-launch"]
+        self.assertEqual(len(dl), 1)
+        self.assertEqual(dl[0].pid, 0x1A2B)
+        self.assertIn("chrome.exe", dl[0].process.lower())
+        self.assertIn("wscript.exe", dl[0].detail)
+
+    def test_fresh_profile_is_info_not_compromise(self):
+        info = [e for e in self._evs()
+                if e.access == "debug-launch-info"]
+        self.assertEqual(len(info), 1)
+        self.assertIn("msedge.exe", info[0].process.lower())
+
+    def test_clean_and_nonbrowser_dropped(self):
+        # 4 events in fixture -> exactly 2 surfaced; clean chrome and
+        # notepad-with-a-flag never reach the event list
+        self.assertEqual(len(self._evs()), 2)
+
+
+class TestMarkerSacls(unittest.TestCase):
+    """Inheritable parent-dir rule: files created by atomic replace are
+    born audited — the drift window is closed structurally."""
+
+    def _install(self, roots, td):
         r = FakeRunner()
-        be = watch.WindowsEventBackend([ROOT], runner=r)
+        be = watch.WindowsEventBackend(roots, runner=r,
+                                       env={"HOME": td})
         be.install()
-        tools = {c[0] for c in r.calls}
-        self.assertIn("auditpol", tools)
-        self.assertIn("powershell", tools)
-        sacl = [c for c in r.calls if c[0] == "powershell"]
-        self.assertTrue(any("AddAuditRule" in c[-1] for c in sacl))
-        # files can't take inheritance flags — script must branch on it
-        self.assertTrue(any("PSIsContainer" in c[-1] for c in sacl))
+        return [c[-1] for c in r.calls if c[0] == "powershell"]
+
+    def test_file_root_parent_gets_marker(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = str(Path(td) / "store" / "creds.json")
+            ps = self._install([root], td)
+            self.assertTrue(any(
+                "NoPropagateInherit" in s and "AddAuditRule" in s
+                and "store" in s for s in ps))
+
+    def test_dir_root_needs_no_marker(self):
+        """Dir roots get OICI — children already inherit."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "store"
+            d.mkdir()
+            ps = self._install([str(d)], td)
+            self.assertFalse(any("NoPropagateInherit" in s for s in ps))
+
+    def test_home_dir_never_marked(self):
+        """~/.env.backup's parent is ~ — marking it would audit every
+        file the user creates; strays aren't app-rewritten anyway."""
+        with tempfile.TemporaryDirectory() as td:
+            root = str(Path(td) / ".env.backup")
+            ps = self._install([root], td)
+            self.assertFalse(any("NoPropagateInherit" in s for s in ps))
+
+    def test_dir_root_children_stamped_at_install(self):
+        """Inheritance only reaches NEW children — existing files inside
+        a dir root (Protect\\<SID>\\key, leveldb) must be stamped at
+        install or they stay unaudited."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "store"
+            d.mkdir()
+            (d / "key1").write_text("x")
+            ps = self._install([str(d)], td)
+            self.assertTrue(any(
+                "Get-ChildItem" in s and "Recurse" in s
+                and "AddAuditRule" in s for s in ps))
+
+
+class TestAuditStateRestore(unittest.TestCase):
+    """install() records prior Process-Creation auditing state;
+    uninstall() restores it instead of leaving the machine louder."""
+
+    def test_state_saved_and_restored(self):
+        with tempfile.TemporaryDirectory() as td:
+            r = FakeRunner()
+            be = watch.WindowsEventBackend([ROOT], runner=r,
+                                           env={"HOME": td})
+            be.install()
+            state = Path(td) / ".tokenwatch" / "audit_policy_state.json"
+            self.assertTrue(state.exists())
+            r.calls.clear()
+            be.uninstall()
+            self.assertFalse(state.exists())
+            # FakeRunner: reg query -> empty -> value was absent ->
+            # restore deletes it rather than writing a bogus value
+            self.assertTrue(any(c[0] == "reg" and "delete" in c
+                                for c in r.calls))
+            # prior "Success" unknown -> do NOT blindly disable
+            self.assertFalse(any("/success:disable" in " ".join(c)
+                                 for c in r.calls))
 
 
 class TestAllowlist(unittest.TestCase):

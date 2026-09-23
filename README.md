@@ -69,7 +69,10 @@ filtered, real-format keys still count.
   for Everyone on each protected path via PowerShell `Set-Acl`, then Security
   event 4663 polling via `wevtutil` — full per-process attribution (exe path,
   pid, access mask). AccessMask `WRITE_DAC`/`WRITE_OWNER` on a cred store is
-  reported as `perm-change` (ACL takeover).
+  reported as `perm-change` (ACL takeover). Install also enables **Process
+  Creation (4688)** auditing plus `ProcessCreationIncludeCmdLine_Enabled`
+  — the prior state of both is recorded in `~/.tokenwatch/
+  audit_policy_state.json` and restored on `watch --uninstall`.
 - **Linux**: `auditctl -w path -p rwa -k tokenwatch` + `ausearch` (needs root).
 - **Fallback** (macOS / no privileges): snapshot diff — detects writes and
   deletes only. **Reads are invisible in degraded mode**; the tool says so
@@ -115,24 +118,35 @@ strings; the manifest is keyed by `sha256(path)` so
 `~/.tokenwatch/honey.json` reveals no locations. Any access = a
 zero-false-positive compromise.
 
-**watch** — Windows polls Security 4663 by `EventRecordID > N` watermark
-(after a one-time 60s seed window), so events that flush late can never be
-dropped. On a housekeeping cadence (default 60s) it also:
+**watch** — Windows polls Security 4663+4688 by `EventRecordID > N`
+watermark (after a one-time 60s seed window), so events that flush late
+can never be dropped. Two structural mechanisms cover the file watch's
+blind spots:
 
-- **reapplies dropped SACLs** — browsers write `Local State`/`Login Data`
-  via temp-file + atomic rename, which silently discards the audit rule.
-  Each housekeeping pass verifies every watched path still carries the
-  SACL and reinstalls it, logging a `sacl-reapply` event — the
+- **born-audited files** — browsers write `Local State`/`Login Data` via
+  temp-file + atomic rename, which silently discards a file-level SACL.
+  Install therefore also puts an `ObjectInherit`+`NoPropagateInherit`
+  audit rule on each file root's *parent* directory (`User Data`,
+  `Default`, …): files created directly inside — including a freshly
+  renamed `Local State` — are born with the SACL. No window. (The home
+  dir itself is exempted; subfolders are untouched.)
+- **SACL drift repair as backstop** — each housekeeping pass (default
+  60s) still verifies every watched path and every parent marker, and
+  reinstalls missing rules, logging `sacl-reapply` — the
   disappearing-SACL pattern is itself a second tamper signal alongside
   `WRITE_DAC`.
-- **flags debug-port browser launches** — since App-Bound Encryption,
+- **debug-port launches via 4688** — since App-Bound Encryption,
   stealers relaunch the browser with `--remote-debugging-port` /
-  `--remote-debugging-pipe` / `--headless` and pull decrypted cookies over
-  DevTools; the file reader is the real signed browser, invisible to file
-  watch. `procwatch` scans command lines (Win32_Process / `ps`) and alerts
-  `debug-launch` (score 80, forces COMPROMISED) when the parent isn't a
-  user shell or known dev tool — script hosts, services, and dead/orphaned
-  parents all flag.
+  `--remote-debugging-pipe` / `--headless` and pull decrypted cookies
+  over DevTools; the file reader is the real signed browser, invisible
+  to file watch. Process-creation events persist after the process exits
+  (a snapshot scan misses the launch-and-dump pattern entirely) and
+  record the *creator's* name — a parent that already died gets a real
+  name, not `?`. Severity keys on the profile: a debug flag + the real
+  `User Data` profile → `debug-launch` (80, forces COMPROMISED); a debug
+  flag + a throwaway `--user-data-dir` → `debug-launch-info` (15, info
+  only — the Playwright/Puppeteer/Selenium shape). Non-Windows platforms
+  fall back to a `ps` snapshot scan on the housekeeping cadence.
 
 **channel integrity** (part of `audit`) — the redirection half of the Muse
 attack: env + WinINET/WinHTTP proxies that could reroute agent traffic,
@@ -174,9 +188,16 @@ Per-rule caps keep one noisy rule from dominating; the SUMMARY block prints
   Chrome's own process; file theft still happens (attackers copy `Cookies` +
   `Local State` and inject/elevate later) — that's the access this detects,
   plus `procwatch` for the DevTools-extraction variant.
-- `debug-launch` needs command-line visibility: on Windows that's same-user
-  `Win32_Process` reads (no admin needed); a process that exits before the
-  housekeeping scan isn't seen.
+- `debug-launch` on Windows is event-driven (4688) — survives process
+  exit. On POSIX it is a `ps` snapshot scan: a process that exits before
+  the housekeeping pass isn't seen (auditd `execve` rules could close
+  this; not wired in — it audits every exec on the box).
+- Enabling Process Creation auditing writes every launched command line
+  into the Security log — more noise and arguably sensitive; install
+  records prior settings and `watch --uninstall` restores them.
+- A marker SACL removed *between* a file's deletion and its replacement
+  could reopen the drift window until the next housekeeping verify —
+  the backstop exists for exactly that residual case.
 - Drift repair only runs while `watch` is installed/running — a SACL dropped
   between runs is restored at the first poll of the next run, not during
   downtime.
@@ -184,6 +205,6 @@ Per-rule caps keep one noisy rule from dominating; the SUMMARY block prints
 ## Tests
 
 ```bash
-python -m unittest discover tests   # 89 tests, all synthetic fixtures —
+python -m unittest discover tests   # 112 tests, all synthetic fixtures —
                                     # no real credentials or malware
 ```

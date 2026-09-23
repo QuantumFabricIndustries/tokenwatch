@@ -270,7 +270,8 @@ def _alert_rule(ev):
     access = ev.get("access")
     if access in ("write", "delete"):
         return "unauthorized-write"
-    if access in ("perm-change", "sacl-reapply", "debug-launch"):
+    if access in ("perm-change", "sacl-reapply", "debug-launch",
+                  "debug-launch-info"):
         return access
     return "unauthorized-read"
 

@@ -11,9 +11,12 @@ Backends (auto-selected):
 Non-allowlisted access -> alerts.jsonl + returned events. Honeytoken paths are
 flagged critical (no legitimate reader exists).
 """
+import csv
 import hashlib
+import io
 import json
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -23,7 +26,14 @@ from . import platforms
 from . import procwatch
 
 AUDIT_SUBCATEGORY_GUID = "{0CCE921D-69AE-11D9-BED3-505054503030}"  # File System
+PROC_CREATION_GUID = "{0CCE922B-69AE-11D9-BED3-505054503030}"  # Proc Creation
+_CMDLINE_REG = (r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies"
+                r"\System\Audit")
+_CMDLINE_VAL = "ProcessCreationIncludeCmdLine_Enabled"
 _EVENT_NS = "{http://schemas.microsoft.com/win/2004/08/events/event}"
+
+# access types emitted by the watcher itself (not allowlist-filtered)
+_SELF_EVENTS = ("sacl-reapply", "debug-launch", "debug-launch-info")
 
 # AccessMask bits (4663)
 AM_READ = 0x1
@@ -237,7 +247,7 @@ class Allowlist:
 
 # ------------------------------------------------------------- backends
 class WindowsEventBackend:
-    name = "windows-4663"
+    name = "windows-4663+4688"
 
     def __init__(self, roots, env=None, runner=None):
         self.roots = [str(r).lower() for r in roots]
@@ -246,23 +256,131 @@ class WindowsEventBackend:
         self.last_record = 0
         self.last_poll = time.time()
         self.installed = False
+        self._marker_dirs = None
 
     def install(self):
-        """Enable File System auditing + drop a read/write SACL per root."""
+        """Enable File System + Process Creation auditing, drop a
+        read/write SACL per root, and put an inheritable ObjectInherit/
+        NoPropagateInherit marker on each file root's PARENT dir so
+        atomically-replaced stores (temp+rename) are born audited."""
         actions = []
         rc, out, err = platforms.run(
             ["auditpol", "/set", f"/subcategory:{AUDIT_SUBCATEGORY_GUID}",
              "/success:enable"], runner=self.runner)
-        actions.append(f"auditpol rc={rc} {err.strip()}")
+        actions.append(f"auditpol file-system rc={rc} {err.strip()}")
+        actions += self._enable_process_creation()
         for root in self.roots:
             actions.append(self._sacl(root, add=True))
+        self._marker_dirs = self._compute_markers()
+        for d in self._marker_dirs:
+            actions.append(self._marker_sacl(d, add=True))
+        for d in (r for r in self.roots if os.path.isdir(r)):
+            actions.append(self._propagate_sacl(d, add=True))
         self.installed = True
         return actions
 
     def uninstall(self):
         actions = [self._sacl(r, add=False) for r in self.roots]
+        markers = (self._marker_dirs
+                   if self._marker_dirs is not None
+                   else self._compute_markers())
+        for d in markers:
+            actions.append(self._marker_sacl(d, add=False))
+        for d in (r for r in self.roots if os.path.isdir(r)):
+            actions.append(self._propagate_sacl(d, add=False))
+        actions += self._restore_process_creation()
         self.installed = False
         return actions
+
+    def _compute_markers(self):
+        """Parent dirs of FILE roots needing the born-audited marker.
+        Dir roots already propagate to children via OICI; a parent that is
+        itself a root is likewise covered. The home dir is excluded —
+        stray honeytokens there aren't atomically rewritten by apps, and a
+        marker on ~ would audit every file the user creates."""
+        home = str(platforms.home(self.env)).lower().rstrip("\\/")
+        dir_roots = {r for r in self.roots if os.path.isdir(r)}
+        markers = set()
+        for r in self.roots:
+            if r in dir_roots:
+                continue
+            parent = str(Path(r).parent).lower()
+            if parent != home and parent not in dir_roots:
+                markers.add(parent)
+        return sorted(markers)
+
+    # ---- 4688 process-creation auditing (with prior-state restore) ----
+    def _audit_state_path(self):
+        return platforms.state_dir(self.env) / "audit_policy_state.json"
+
+    def _enable_process_creation(self):
+        acts = []
+        state = {}
+        # record prior Process Creation inclusion so uninstall restores it
+        rc, out, _ = platforms.run(
+            ["auditpol", "/get", f"/subcategory:{PROC_CREATION_GUID}", "/r"],
+            runner=self.runner)
+        had = None
+        if rc == 0 and out:
+            for row in csv.reader(io.StringIO(out)):
+                if PROC_CREATION_GUID.strip("{}").lower() in \
+                        ",".join(row).lower():
+                    inc = row[4].strip().lower() if len(row) > 4 else ""
+                    had = ("success" in inc)
+        state["proc_creation_had_success"] = had
+        rc, out, _ = platforms.run(
+            ["reg", "query", _CMDLINE_REG, "/v", _CMDLINE_VAL],
+            runner=self.runner)
+        m = re.search(r"0x([0-9a-fA-F]+)", out or "")
+        state["cmdline_was"] = int(m.group(1), 16) if (rc == 0 and m) \
+            else None
+        try:
+            self._audit_state_path().parent.mkdir(parents=True,
+                                                  exist_ok=True)
+            self._audit_state_path().write_text(json.dumps(state),
+                                                encoding="utf-8")
+        except OSError:
+            pass
+        rc, _, err = platforms.run(
+            ["auditpol", "/set", f"/subcategory:{PROC_CREATION_GUID}",
+             "/success:enable"], runner=self.runner)
+        acts.append(f"auditpol process-creation rc={rc} {err.strip()}")
+        rc, _, err = platforms.run(
+            ["reg", "add", _CMDLINE_REG, "/v", _CMDLINE_VAL, "/t",
+             "REG_DWORD", "/d", "1", "/f"], runner=self.runner)
+        acts.append(f"reg cmdline-in-4688 rc={rc} {err.strip()}")
+        return acts
+
+    def _restore_process_creation(self):
+        p = self._audit_state_path()
+        try:
+            state = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        acts = []
+        if state.get("proc_creation_had_success") is False:
+            rc, _, err = platforms.run(
+                ["auditpol", "/set", f"/subcategory:{PROC_CREATION_GUID}",
+                 "/success:disable"], runner=self.runner)
+            acts.append(f"auditpol process-creation restore rc={rc} "
+                        f"{err.strip()}")
+        if state.get("cmdline_was") is None:
+            rc, _, err = platforms.run(
+                ["reg", "delete", _CMDLINE_REG, "/v", _CMDLINE_VAL, "/f"],
+                runner=self.runner)
+            acts.append(f"reg cmdline restore (absent) rc={rc} "
+                        f"{err.strip()}")
+        else:
+            rc, _, err = platforms.run(
+                ["reg", "add", _CMDLINE_REG, "/v", _CMDLINE_VAL, "/t",
+                 "REG_DWORD", "/d", str(state["cmdline_was"]), "/f"],
+                runner=self.runner)
+            acts.append(f"reg cmdline restore rc={rc} {err.strip()}")
+        try:
+            p.unlink()
+        except OSError:
+            pass
+        return acts
 
     def _sacl(self, path, add):
         """Set/remove a Success audit rule for Everyone on `path`."""
@@ -283,36 +401,104 @@ class WindowsEventBackend:
             timeout=60, runner=self.runner)
         return f"sacl {'add' if add else 'del'} {path}: rc={rc} {err.strip()}"
 
+    def _marker_sacl(self, path, add):
+        """ObjectInherit+NoPropagateInherit rule on a parent dir — files
+        created directly inside (a freshly-renamed Local State, Login
+        Data, ...) are born with the audit SACL; subfolders unaffected."""
+        esc = path.replace("'", "''")
+        verb = "AddAuditRule" if add else "RemoveAuditRuleAll"
+        ps = (
+            "$p='%s';"
+            "$rule=New-Object System.Security.AccessControl."
+            "FileSystemAuditRule('Everyone','Read,Write,Delete,"
+            "ChangePermissions,TakeOwnership','ObjectInherit',"
+            "'NoPropagateInherit','Success');"
+            "$acl=Get-Acl -LiteralPath $p -Audit;"
+            "$acl.%s($rule);"
+            "Set-Acl -LiteralPath $p -AclObject $acl" % (esc, verb))
+        rc, out, err = platforms.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            timeout=60, runner=self.runner)
+        return f"marker-sacl {'add' if add else 'del'} {path}: " \
+               f"rc={rc} {err.strip()}"
+
+    _PROPAGATE_CAP = 500     # children stamped per dir root
+
+    def _propagate_sacl(self, dirpath, add):
+        """Stamp/remove the audit rule on EXISTING children of a dir root.
+
+        Inheritance only reaches children created AFTER the parent's rule
+        is set — Set-Acl does not propagate to pre-existing children, so
+        the DPAPI master keys / leveldb files already sitting in a dir
+        root would stay unaudited without this."""
+        esc = dirpath.replace("'", "''")
+        verb = "AddAuditRule" if add else "RemoveAuditRuleAll"
+        ps = (
+            "$root='%s';"
+            "Get-ChildItem -LiteralPath $root -Recurse -Force "
+            "-ErrorAction SilentlyContinue | Select-Object -First %d |"
+            "ForEach-Object{$p=$_.FullName;"
+            "$flags=if($_.PSIsContainer){'ContainerInherit,ObjectInherit'}"
+            "else{'None'};"
+            "$rule=New-Object System.Security.AccessControl."
+            "FileSystemAuditRule('Everyone','Read,Write,Delete,"
+            "ChangePermissions,TakeOwnership',$flags,'None','Success');"
+            "$acl=Get-Acl -LiteralPath $p -Audit;$acl.%s($rule);"
+            "Set-Acl -LiteralPath $p -AclObject $acl}"
+            % (esc, self._PROPAGATE_CAP, verb))
+        rc, out, err = platforms.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            timeout=120, runner=self.runner)
+        return f"propagate-{'add' if add else 'del'} {dirpath}: " \
+               f"rc={rc} {err.strip()}"
+
     # FileSystemRights bit values we set — the Everyone+Success+
     # ChangePermissions+TakeOwnership combo is distinctive enough to serve
-    # as the "our rule" marker
+    # as the "our rule" marker. MISSINGM = parent-dir born-audit rule.
     _VERIFY_PS = (
-        "$paths=@(%s);"
-        "foreach($p in $paths){try{$hit=$false;"
+        "$f=@(%s);$m=@(%s);"
+        "foreach($p in $f){try{$hit=$false;"
         "foreach($r in (Get-Acl -LiteralPath $p -Audit).Audit){"
         "if($r.IdentityReference -match 'Everyone' -and $r.AuditFlags "
         "-match 'Success' -and ($r.FileSystemRights -band 262144) -and "
         "($r.FileSystemRights -band 524288)){$hit=$true}};"
-        "if(-not $hit){'MISSING: '+$p}}catch{'MISSING: '+$p}}")
+        "if(-not $hit){'MISSING: '+$p}}catch{'MISSING: '+$p}};"
+        "foreach($p in $m){try{$hit=$false;"
+        "foreach($r in (Get-Acl -LiteralPath $p -Audit).Audit){"
+        "if($r.IdentityReference -match 'Everyone' -and $r.AuditFlags "
+        "-match 'Success' -and ($r.FileSystemRights -band 262144) -and "
+        "($r.FileSystemRights -band 524288) -and $r.PropagationFlags "
+        "-match 'NoPropagateInherit'){$hit=$true}};"
+        "if(-not $hit){'MISSINGM: '+$p}}catch{'MISSINGM: '+$p}}")
 
     def verify(self):
-        """Paths whose tokenwatch SACL is gone — atomic file replacement
-        (browser write-temp-then-rename) drops it silently. Only checked
-        when installed: a bare `watch --once` must not mutate ACLs."""
+        """(path, kind) list whose audit rules are gone — file SACLs lost
+        to atomic replace, or parent-dir marker rules removed. Only when
+        installed: a bare `watch --once` must not mutate ACLs."""
         if not self.installed or not self.roots:
             return []
-        listed = ", ".join("'" + r.replace("'", "''") + "'"
-                           for r in self.roots)
+        markers = (self._marker_dirs
+                   if self._marker_dirs is not None
+                   else self._compute_markers())
+        fmt = lambda xs: "@(" + ", ".join(
+            "'" + x.replace("'", "''") + "'" for x in xs) + ")"
         rc, out, _ = platforms.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-             self._VERIFY_PS % listed], timeout=120, runner=self.runner)
+             self._VERIFY_PS % (fmt(self.roots), fmt(markers))],
+            timeout=120, runner=self.runner)
         if rc != 0:
             return []
-        return [ln[len("MISSING: "):] for ln in out.splitlines()
-                if ln.startswith("MISSING: ")]
+        res = []
+        for ln in out.splitlines():
+            if ln.startswith("MISSINGM: "):
+                res.append((ln[10:], "marker"))
+            elif ln.startswith("MISSING: "):
+                res.append((ln[9:], "file"))
+        return res
 
-    def reapply(self, path):
-        return self._sacl(path, add=True)
+    def reapply(self, path, kind="file"):
+        return (self._marker_sacl(path, add=True) if kind == "marker"
+                else self._sacl(path, add=True))
 
     def poll(self):
         """Fetch new 4663 events touching protected roots.
@@ -322,12 +508,12 @@ class WindowsEventBackend:
         flush late still carry higher record IDs, so a time window can
         never drop them."""
         if self.last_record:
-            q = (f"*[System[(EventID=4663) and "
+            q = (f"*[System[(EventID=4663 or EventID=4688) and "
                  f"(EventRecordID > {self.last_record})]]")
         else:
             window_ms = int(max(60_000,
                                 (time.time() - self.last_poll + 5) * 1500))
-            q = ("*[System[(EventID=4663) and "
+            q = ("*[System[(EventID=4663 or EventID=4688) and "
                  f"TimeCreated[timediff(@SystemTime) <= {window_ms}]]]")
         self.last_poll = time.time()
         rc, out, _ = platforms.run(
@@ -352,16 +538,24 @@ class WindowsEventBackend:
             sys_el = ev.find(f"{_EVENT_NS}System")
             data = {d.get("Name"): (d.text or "")
                     for d in ev.iter(f"{_EVENT_NS}Data")}
-            rid = 0
+            rid, eid = 0, 0
             if sys_el is not None:
                 rec = sys_el.find(f"{_EVENT_NS}EventRecordID")
                 rid = int(rec.text) if rec is not None and rec.text else 0
+                eid_el = sys_el.find(f"{_EVENT_NS}EventID")
+                if eid_el is not None and eid_el.text:
+                    eid = int(eid_el.text)
             if rid and rid <= self.last_record:
                 continue
             newest = max(newest, rid)   # batch update — wevtutil /rd:true
                                         # returns NEWEST first; updating the
                                         # watermark mid-loop would skip the
                                         # rest of this same batch
+            if eid == 4688:
+                hit = self._event_4688(data)
+                if hit:
+                    events.append(hit)
+                continue
             obj = data.get("ObjectName", "")
             if not obj or not self._in_roots(obj):
                 continue
@@ -377,6 +571,37 @@ class WindowsEventBackend:
                 user=data.get("SubjectUserName", "")))
         self.last_record = newest
         return events
+
+    @staticmethod
+    def _event_4688(data):
+        """Process creation -> flagged browser launch, or None.
+
+        4688 persists after the process exits (unlike a process snapshot)
+        and carries the CREATOR's name — a parent that's already dead gets
+        a real name instead of '?'."""
+        newproc = data.get("NewProcessName", "")
+        name = newproc.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+        if name not in procwatch.BROWSER_NAMES:
+            return None
+        cmd = data.get("CommandLine", "")
+        flag = procwatch.bad_flag(cmd)
+        if not flag:
+            return None
+        parent = (data.get("ParentProcessName")
+                  or data.get("CreatorProcessName") or "?")
+        pname = parent.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+        if pname in procwatch.OK_PARENTS:
+            return None
+        sev = ("debug-launch" if procwatch.real_profile(cmd)
+               else "debug-launch-info")
+        try:
+            pid = int(data.get("NewProcessId", "0x0"), 16)
+        except ValueError:
+            pid = 0
+        return AccessEvent(
+            ts=time.time(), path=cmd[:200], process=newproc, pid=pid,
+            access=sev, user=data.get("SubjectUserName", ""),
+            detail=f"flag={flag} parent={pname}")
 
     def _in_roots(self, obj):
         o = obj.lower()
@@ -439,9 +664,9 @@ class LinuxAuditBackend:
         rc, out, _ = platforms.run(["auditctl", "-l"], runner=self.runner)
         if rc != 0:
             return []
-        return [r for r in self.roots if r not in out]
+        return [(r, "file") for r in self.roots if r not in out]
 
-    def reapply(self, path):
+    def reapply(self, path, kind="file"):
         rc, _, err = platforms.run(
             ["auditctl", "-w", path, "-k", "tokenwatch", "-p", "rwa"],
             runner=self.runner)
@@ -495,7 +720,7 @@ class SnapshotBackend:
     def verify(self):
         return []   # no kernel watches to drift — snapshot re-takes anyway
 
-    def reapply(self, path):
+    def reapply(self, path, kind="file"):
         return ""
 
     def _take(self):
@@ -591,30 +816,39 @@ class Watcher:
         #    or a program atomically rewriting the store
         verify = getattr(self.backend, "verify", None)
         if verify:
-            for p in verify():
-                act = self.backend.reapply(p)
+            for item in verify():
+                p, kind = item if isinstance(item, tuple) else (item, "file")
+                act = self.backend.reapply(p, kind)
                 alerts.append(AccessEvent(
                     time.time(), str(p), "tokenwatch", os.getpid(),
                     "sacl-reapply", detail=str(act)))
 
-        # 2. browser launched with debugging/headless flags by a
-        #    non-shell, non-devtool parent — DevTools cookie extraction
-        for s in procwatch.scan(runner=self.runner, platform=self.platform):
-            if s["pid"] in self._seen_pids:
-                continue
-            if len(self._seen_pids) > 4096:
-                self._seen_pids.clear()
-            self._seen_pids.add(s["pid"])
-            alerts.append(AccessEvent(
-                time.time(), s["cmdline"][:200],
-                s.get("exe") or s["name"], s["pid"], "debug-launch",
-                detail=f"flag={s['flag']} "
-                       f"parent={s.get('parent', '?')}({s['ppid']})"))
+        # 2. browser debug-port launches — on Windows these come from 4688
+        #    events in the poll stream (survive process exit, real parent
+        #    name); the snapshot scan only runs on degraded backends
+        if not isinstance(self.backend, WindowsEventBackend):
+            for s in procwatch.scan(runner=self.runner,
+                                    platform=self.platform):
+                if s["pid"] in self._seen_pids:
+                    continue
+                if len(self._seen_pids) > 4096:
+                    self._seen_pids.clear()
+                self._seen_pids.add(s["pid"])
+                sev = ("debug-launch" if procwatch.real_profile(
+                    s["cmdline"]) else "debug-launch-info")
+                alerts.append(AccessEvent(
+                    time.time(), s["cmdline"][:200],
+                    s.get("exe") or s["name"], s["pid"], sev,
+                    detail=f"flag={s['flag']} "
+                           f"parent={s.get('parent', '?')}({s['ppid']})"))
 
     def poll_once(self):
         """One poll cycle -> list of NON-allowlisted events (alerts)."""
         alerts = []
         for ev in self.backend.poll():
+            if ev.access in _SELF_EVENTS:
+                alerts.append(ev)   # detection events, not file access
+                continue
             if str(ev.path).lower() in self.honey:
                 ev.honey = True
             if self.allowlist.allows(ev):

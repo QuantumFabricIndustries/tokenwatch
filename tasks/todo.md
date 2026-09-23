@@ -156,3 +156,30 @@ cached context — uncovered by gitguard/phantom-snare/iron-gates-xdr.
   newest-first budget took audit 163s -> 13.5s.
 - INCIDENT: `taskkill //IM python.exe` during debugging killed unrelated
   user python processes — never kill by image name (lessons.md).
+
+## Round 5 — event-driven launches + born-audited stores (user-directed)
+- [x] 4688 process-creation in the same wevtutil/Security query (EventID
+      4663 or 4688, shared EventRecordID watermark). Install enables
+      auditpol "Process Creation" + ProcessCreationIncludeCmdLine_Enabled;
+      prior state saved to ~/.tokenwatch/audit_policy_state.json and
+      restored on uninstall (no leaving the box louder).
+- [x] Snapshot scanning misses launch-and-dump stealers — procwatch's
+      Win32_Process/ps scan only ran on housekeeping cadence and only saw
+      live processes. On Windows the 4688 event persists after exit AND
+      carries ParentProcessName -> dead wscript parents get real names.
+      procwatch.scan retained as the degraded/POSIX path only.
+- [x] Severity split on profile: debug flag + real User Data profile ->
+      debug-launch (80, COMPROMISED); debug flag + throwaway
+      --user-data-dir -> debug-launch-info (15). Playwright shape no
+      longer forces the verdict. _udd() handles quoted paths with spaces
+      + firefox -profile.
+- [x] Born-audited files: ObjectInherit+NoPropagateInherit marker SACL on
+      each file root's PARENT dir -> a temp+renamed Local State carries
+      the audit rule at creation. Home dir excluded (stray honeytokens);
+      subfolders untouched. Drift verify() now also checks markers
+      (MISSINGM) and reapply() writes the right rule kind.
+- [x] Fixed script-side gaps from round 4: foreign python read runs as a
+      child process (self-pid exemption was correct), Protect probe now
+      reads a real key FILE (rglob returned the SID dir first).
+- [x] 112 tests green (incl. 4688 parse fixture, marker/drift/restore,
+      classifier matrix)

@@ -1,0 +1,73 @@
+<Events>
+  <!-- 4688 process-creation events. Newest first, matching /rd:true.
+       NOTE: XML comments cannot contain double-hyphen sequences, so flag
+       names in comments are written without their leading dashes. -->
+  <!-- debug flag + real profile (no user-data-dir) + dead wscript
+       parent gives debug-launch (COMPROMISED). The creator name
+       survives even though the parent has exited. -->
+  <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+    <System>
+      <EventID>4688</EventID>
+      <EventRecordID>99110</EventRecordID>
+      <TimeCreated SystemTime="2026-09-23T12:00:05.000Z"/>
+    </System>
+    <EventData>
+      <Data Name="SubjectUserName">reven</Data>
+      <Data Name="NewProcessId">0x1A2B</Data>
+      <Data Name="NewProcessName">C:\Program Files\Google\Chrome\Application\chrome.exe</Data>
+      <Data Name="ProcessId">0x3131</Data>
+      <Data Name="CommandLine">"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --headless=new</Data>
+      <Data Name="ParentProcessName">C:\Windows\System32\wscript.exe</Data>
+    </EventData>
+  </Event>
+  <!-- debug flag + throwaway temp user-data-dir (Playwright shape),
+       non-shell parent gives debug-launch-info, not forced COMPROMISED -->
+  <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+    <System>
+      <EventID>4688</EventID>
+      <EventRecordID>99109</EventRecordID>
+      <TimeCreated SystemTime="2026-09-23T12:00:04.000Z"/>
+    </System>
+    <EventData>
+      <Data Name="SubjectUserName">reven</Data>
+      <Data Name="NewProcessId">0x2C3D</Data>
+      <Data Name="NewProcessName">C:\Program Files\Microsoft\Edge\Application\msedge.exe</Data>
+      <Data Name="ProcessId">0x3131</Data>
+      <Data Name="CommandLine">msedge.exe --remote-debugging-port=0 --user-data-dir=C:\Users\reven\AppData\Local\Temp\pw-abc123 --headless</Data>
+      <Data Name="ParentProcessName">C:\Windows\System32\wscript.exe</Data>
+    </EventData>
+  </Event>
+  <!-- clean chrome launch is ignored entirely -->
+  <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+    <System>
+      <EventID>4688</EventID>
+      <EventRecordID>99108</EventRecordID>
+      <TimeCreated SystemTime="2026-09-23T12:00:03.000Z"/>
+    </System>
+    <EventData>
+      <Data Name="SubjectUserName">reven</Data>
+      <Data Name="NewProcessId">0x3E4F</Data>
+      <Data Name="NewProcessName">C:\Program Files\Google\Chrome\Application\chrome.exe</Data>
+      <Data Name="ProcessId">0x100</Data>
+      <Data Name="CommandLine">"C:\Program Files\Google\Chrome\Application\chrome.exe" about:blank</Data>
+      <Data Name="ParentProcessName">C:\Windows\explorer.exe</Data>
+    </EventData>
+  </Event>
+  <!-- non-browser process creation is ignored even with a flag in the
+       command line -->
+  <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+    <System>
+      <EventID>4688</EventID>
+      <EventRecordID>99107</EventRecordID>
+      <TimeCreated SystemTime="2026-09-23T12:00:02.000Z"/>
+    </System>
+    <EventData>
+      <Data Name="SubjectUserName">reven</Data>
+      <Data Name="NewProcessId">0x4A5B</Data>
+      <Data Name="NewProcessName">C:\Windows\System32\notepad.exe</Data>
+      <Data Name="ProcessId">0x100</Data>
+      <Data Name="CommandLine">notepad.exe notes.txt --remote-debugging-port=1</Data>
+      <Data Name="ParentProcessName">C:\Windows\System32\wscript.exe</Data>
+    </EventData>
+  </Event>
+</Events>

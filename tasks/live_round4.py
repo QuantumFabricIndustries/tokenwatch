@@ -1,22 +1,25 @@
-"""Scoped live proof — round 4.
+"""Scoped live proof — round 5 (4688 + born-audited + severity split).
 
-Scope (per request): Edge Login Data + Local State, Microsoft\\Protect.
+Scope: Edge Login Data + Local State, Microsoft\\Protect.
 NO Cookies (write volume floods the Security log).
 
 Proves:
-  1. SACL drift repair — force an atomic replace on the real Local State
-     (temp-write + os.replace = exactly what Chromium does), confirm the
-     housekeeping pass detects the missing SACL and reapplies it.
-  2. Foreign reads of Login Data / Local State / Protect alert with
-     process attribution (powershell + python readers).
-  3. debug-launch: msedge spawned with --remote-debugging-port --headless
-     under a NON-allowlisted parent (wscript) -> alert. Uses a throwaway
-     --user-data-dir so the real profile is untouched.
-  4. teardown: SACLs removed.
-
-Runs unelevated for the procwatch demo; the SACL portion self-elevates
-via Start-Process -Verb RunAs (one UAC prompt) and logs to
-%TEMP%\\tw_round4.log.
+  1. Born-audited stores — parent-dir marker SACL (ObjectInherit +
+     NoPropagateInherit) means an atomic temp+os.replace on Local State
+     produces a NEW file that already carries the audit rule. Verified by
+     verify() returning clean AND a foreign read on the replaced file
+     alerting immediately (the old 60s drift window is gone).
+  2. Foreign reads alert with process attribution: powershell on
+     Login Data, a CHILD python.exe process on Local State (the
+     last-round in-process read was correctly self-pid-exempted), and
+     powershell on a real Protect\\<SID>\\<key> FILE (last round probed
+     the SID dir).
+  3. 4688 process-creation detection: msedge spawned with
+     --remote-debugging-port by a wscript parent that EXITS before the
+     poll — the event still fires (it persists post-exit) and names the
+     dead creator. Real profile -> debug-launch; temp --user-data-dir ->
+     debug-launch-info.
+  4. teardown: file SACLs + marker SACLs removed, audit policy restored.
 """
 import json
 import os
@@ -67,37 +70,51 @@ def elevated_proof():
     (state / "alerts.jsonl").unlink(missing_ok=True)
     out("--- baseline drained ---")
 
-    # ---- 1. drift: atomic-replace the real Local State (bytes preserved)
+    # ---- 1. born-audited: atomic-replace the real Local State (exactly
+    #         Chromium's safe-write). The User Data marker SACL means the
+    #         new file carries the audit rule at creation — no window.
     ls = TARGETS[1]
     tmp = ls.with_name("Local State.twtmp")
     shutil.copyfile(ls, tmp)
-    os.replace(tmp, ls)          # same mechanism as Chromium's safe write
+    os.replace(tmp, ls)
     out("forced atomic replace on Local State (content identical)")
+    missing = w.backend.verify()
+    out(f"verify after replace: {missing or 'clean — marker inherited'}")
+    # structural proof: a foreign read on the REPLACED file alerts
+    # immediately — before any housekeeping pass could run
+    subprocess.run(["powershell", "-NoProfile", "-Command",
+                    f"Get-Content -LiteralPath '{ls}' -TotalCount 1 "
+                    "-ErrorAction SilentlyContinue"], capture_output=True)
     time.sleep(4)
     alerts = w.poll_once()
-    reapplied = [a for a in alerts if a.access == "sacl-reapply"]
-    out(f"drift check: {len(reapplied)} sacl-reapply event(s)")
-    for a in reapplied:
-        out(f"  reapply: {a.path} | {a.detail}")
+    born = [a for a in alerts if a.access in ("read", "write")
+            and "local state" in a.path.lower()]
+    out(f"born-audited read on NEW Local State: {len(born)} alert(s)")
+    for a in born:
+        out(f"  {a.access} {a.path} <- {a.process} pid={a.pid}")
+    if not born:
+        out("  !! marker did NOT cover the replace — window still open")
 
     # ---- 2. foreign reads
     subprocess.run(["powershell", "-NoProfile", "-Command",
                     f"Get-Content -LiteralPath '{TARGETS[0]}' "
                     "-TotalCount 1 -ErrorAction SilentlyContinue"],
                    capture_output=True)
-    # python reader on Local State
-    try:
-        TARGETS[1].read_bytes()[:16]
-    except OSError as e:
-        out(f"  python read failed: {e}")
-    # read a file inside Protect (dir SACL -> child inherits)
+    # python reader as a CHILD process — in-process reads are correctly
+    # self-pid exempted (that was last round's script bug)
+    subprocess.run([sys.executable, "-c",
+                    f"open(r'{ls}', 'rb').read(16)"],
+                   capture_output=True)
+    # real Protect\<SID>\<key> FILE (rglob returns the SID dir first)
     prot = TARGETS[2]
-    inner = next(prot.rglob("*"), None)
-    if inner and inner.is_file():
+    inner = next((p for p in prot.rglob("*") if p.is_file()), None)
+    if inner:
         subprocess.run(["powershell", "-NoProfile", "-Command",
                         f"Get-Content -LiteralPath '{inner}' -TotalCount 1"
                         " -ErrorAction SilentlyContinue"],
                        capture_output=True)
+    else:
+        out("  no file under Protect to probe")
     time.sleep(4)
     alerts = w.poll_once()
     reads = [a for a in alerts if a.access in ("read", "write")]
@@ -105,30 +122,45 @@ def elevated_proof():
     for a in reads:
         out(f"  {a.access} {a.path} <- {a.process} pid={a.pid}")
 
-    # ---- 3. debug-launch: wscript (non-allowlisted) spawns headless edge
+    # ---- 3. 4688 debug-launch — wscript parent exits instantly; the
+    #         event persists in the log AND names the dead creator.
+    #         real profile -> debug-launch ; temp udd -> info
     pd = Path(TEMP) / "tw_edge_pd"
     pd.mkdir(exist_ok=True)
     vbs = Path(TEMP) / "tw_spawn.vbs"
     vbs.write_text(
         'CreateObject("WScript.Shell").Run """' + EDGE + '"" '
-        '--remote-debugging-port=9222 --headless=new '
+        '--remote-debugging-port=9223 --headless=new about:blank", '
+        '0, False\n',
+        encoding="utf-8")                       # NO user-data-dir = real
+    vbs2 = Path(TEMP) / "tw_spawn2.vbs"
+    vbs2.write_text(
+        'CreateObject("WScript.Shell").Run """' + EDGE + '"" '
+        '--remote-debugging-port=9224 --headless=new '
         f'--user-data-dir={pd} about:blank", 0, False\n',
-        encoding="utf-8")
+        encoding="utf-8")                       # temp udd = automation
     subprocess.run(["wscript", str(vbs)], capture_output=True)
-    time.sleep(6)               # let edge come up + housekeeping cadence
+    subprocess.run(["wscript", str(vbs2)], capture_output=True)
+    time.sleep(6)
     alerts = w.poll_once() + w.poll_once()
     dl = [a for a in alerts if a.access == "debug-launch"]
-    out(f"debug-launch: {len(dl)} alert(s)")
+    info = [a for a in alerts if a.access == "debug-launch-info"]
+    out(f"debug-launch (real profile): {len(dl)} alert(s)")
     for a in dl:
         out(f"  {a.detail} | {a.path[:120]}")
-    subprocess.run(["taskkill", "/F", "/PID",
-                    str(dl[0].pid)] if dl else ["cmd", "/c", "rem"],
-                   capture_output=True)
+    out(f"debug-launch-info (temp profile): {len(info)} alert(s)")
+    for a in info:
+        out(f"  {a.detail} | {a.path[:120]}")
+    for a in dl + info:                        # clean up spawned edges
+        if a.pid:
+            subprocess.run(["taskkill", "/F", "/PID", str(a.pid)],
+                           capture_output=True)
 
     # ---- 4. teardown
     for act in w.uninstall():
         out(f"  uninstall: {act}")
     vbs.unlink(missing_ok=True)
+    vbs2.unlink(missing_ok=True)
     out("DONE")
 
 

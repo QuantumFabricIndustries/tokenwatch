@@ -44,8 +44,12 @@ RULE_WEIGHTS = {
     "sacl-reapply":        10,   # audit rule vanished — atomic rewrite or
                                # tamper; a signal, not proof of theft
     "debug-launch":        80,   # browser w/ debug-port+headless spawned
-                               # by a non-shell parent (DevTools cookie
+                               # by a non-shell parent against the real
+                               # User Data profile (DevTools cookie
                                # extraction — ABE-era stealer playbook)
+    "debug-launch-info":   15,   # debug flag but a fresh/temp
+                               # --user-data-dir — the
+                               # Playwright/Puppeteer/Selenium shape
 }
 
 FORCE_COMPROMISED = {"honeytoken-read", "unauthorized-read",

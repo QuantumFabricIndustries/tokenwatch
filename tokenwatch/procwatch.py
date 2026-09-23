@@ -13,6 +13,7 @@ Everything goes through the injectable runner so tests can fake it.
 """
 import csv
 import io
+import re
 from . import platforms
 
 # browser process basenames we care about (launcher.exe = Opera's real bin)
@@ -62,6 +63,48 @@ def bad_flag(cmdline):
     return None
 
 
+# what "the victim's real profile" looks like in a path — cover both the
+# Windows dir-tree forms (Google\Chrome\User Data, Mozilla\Firefox) and
+# the dot-config forms (~/.config/google-chrome, ~/.mozilla)
+_REAL_PROFILE_MARKERS = (
+    "user data", "google\\chrome", "google-chrome", "microsoft\\edge",
+    "microsoft-edge", "brave", "chromium", "opera", "vivaldi", "thorium",
+    "arc", "mozilla", "firefox", "thunderbird",
+)
+
+
+def _udd(cmdline):
+    """Extract --user-data-dir= / -profile target, or None.
+
+    The value may be quoted AND contain spaces (a real profile dir like
+    User Data) — a naive non-space match truncates the real profile path
+    and misjudges it as a fresh profile."""
+    cl = cmdline or ""
+    m = re.search(r'--user-data-dir\s*=\s*(?:"([^"]*)"|(\S+))',
+                  cl, re.IGNORECASE)
+    if not m:
+        m = re.search(r'(?:^|\s)-profile\s+(?:"([^"]*)"|(\S+))',
+                      cl, re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1) or m.group(2)
+
+
+def real_profile(cmdline):
+    """Does the launch target the victim's actual profile?
+
+    No --user-data-dir => the browser opens its default (real) profile.
+    A user-data-dir pointing at a real browser profile tree => real.
+    A user-data-dir into temp/scratch => fresh automation profile — the
+    Playwright/Puppeteer/Selenium shape, which can't hold victim cookies.
+    """
+    target = _udd(cmdline)
+    if target is None:
+        return True
+    p = target.replace("/", "\\").lower()
+    return any(k in p for k in _REAL_PROFILE_MARKERS)
+
+
 def suspicious(cmdline, parent_name):
     """Flag a browser launch? cmdline has a debug/headless flag AND the
     parent isn't a shell/dev tool."""
@@ -71,6 +114,18 @@ def suspicious(cmdline, parent_name):
     if (parent_name or "").lower() in OK_PARENTS:
         return None
     return flag
+
+
+def classify(cmdline, parent_name):
+    """-> "real" | "fresh" | None.
+
+    real  = debug flag + real profile + non-shell parent  -> COMPROMISED
+    fresh = debug flag + throwaway profile                -> info only
+    None  = nothing suspicious
+    """
+    if not suspicious(cmdline, parent_name):
+        return None
+    return "real" if real_profile(cmdline) else "fresh"
 
 
 # ------------------------------------------------------------------ windows

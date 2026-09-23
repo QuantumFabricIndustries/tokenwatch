@@ -85,3 +85,28 @@ child process.
 from `tests/` imported the OLD package (plant() without runner kwarg).
 Check `python -c "import tokenwatch; print(tokenwatch.__file__)"` when
 results look impossible.
+
+## Round 5 corrections (live proof found a real gap)
+- **Inheritable ACEs don't retroactively cover existing children.** A
+  dir-root SACL with OICI only audits children created AFTER the rule is
+  set — Set-Acl does not propagate. Pre-existing files under a dir root
+  (Protect\<SID>\* key files, leveldb) stay unaudited until explicitly
+  stamped. The live run proved it: powershell read of Protect\CREDHIST
+  produced no 4663 while reads on file roots did. Fix: _propagate_sacl()
+  stamps the rule on existing children at install (cap 500), removes on
+  uninstall. THE LIVE PROOF CAUGHT WHAT THE UNIT TESTS COULDN'T — the
+  FakeRunner can't model Windows ACL inheritance.
+- **XML comments can't contain `--`.** A fixture comment with
+  `--remote-debugging-port` made ET.fromstring throw; _parse caught it
+  and returned [] — silent zero-event parse, tests caught it as "0 != 2".
+- **Snapshot process scans are structurally blind to launch-and-dump.**
+  Win32_Process/ps only see live processes; ABE-era stealers spawn
+  headless browser, extract in ~2s, exit. 4688 events persist post-exit
+  and carry the creator name — the right source, same watermark query.
+- **audited command lines need the reg value.** 4688 without
+  ProcessCreationIncludeCmdLine_Enabled logs no CommandLine — enable at
+  install, record prior state, restore at uninstall.
+- **The real-vs-fresh profile split is the FP boundary.** Automation
+  (Playwright/Selenium) always passes a throwaway --user-data-dir;
+  a stealer needs the real profile. Parse quoted udd values containing
+  spaces or "User Data" truncates to a false "fresh".
