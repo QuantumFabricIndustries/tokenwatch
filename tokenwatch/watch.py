@@ -24,12 +24,14 @@ from pathlib import Path
 
 from . import platforms
 from . import procwatch
+from . import secrets
 
 AUDIT_SUBCATEGORY_GUID = "{0CCE921D-69AE-11D9-BED3-505054503030}"  # File System
 PROC_CREATION_GUID = "{0CCE922B-69AE-11D9-BED3-505054503030}"  # Proc Creation
 _CMDLINE_REG = (r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies"
                 r"\System\Audit")
 _CMDLINE_VAL = "ProcessCreationIncludeCmdLine_Enabled"
+LOG_MAX_BYTES = 256 * 1024 * 1024   # 4688 volume would roll ~20MB fast
 _EVENT_NS = "{http://schemas.microsoft.com/win/2004/08/events/event}"
 
 # access types emitted by the watcher itself (not allowlist-filtered)
@@ -334,6 +336,13 @@ class WindowsEventBackend:
         m = re.search(r"0x([0-9a-fA-F]+)", out or "")
         state["cmdline_was"] = int(m.group(1), 16) if (rc == 0 and m) \
             else None
+        # 4688 volume on a dev box (builds/npm/cargo spawn thousands of
+        # processes) rolls the default ~20MB Security log in hours —
+        # record the current max and raise it; restore on uninstall.
+        rc, out, _ = platforms.run(["wevtutil", "gl", "Security"],
+                                   runner=self.runner)
+        m = re.search(r"maxSize:\s*(\d+)", out or "")
+        state["log_max_was"] = int(m.group(1)) if (rc == 0 and m) else None
         try:
             self._audit_state_path().parent.mkdir(parents=True,
                                                   exist_ok=True)
@@ -349,6 +358,17 @@ class WindowsEventBackend:
             ["reg", "add", _CMDLINE_REG, "/v", _CMDLINE_VAL, "/t",
              "REG_DWORD", "/d", "1", "/f"], runner=self.runner)
         acts.append(f"reg cmdline-in-4688 rc={rc} {err.strip()}")
+        acts.append(
+            "NOTE: 4688 logs RAW command lines to the Security log "
+            "(admin-only to read; secrets can appear there — alerts "
+            "redact them, the log itself does not)")
+        if not state.get("log_max_was") or \
+                state["log_max_was"] < LOG_MAX_BYTES:
+            rc, _, err = platforms.run(
+                ["wevtutil", "sl", "Security", f"/ms:{LOG_MAX_BYTES}"],
+                runner=self.runner)
+            acts.append(f"security-log size -> {LOG_MAX_BYTES}B rc={rc} "
+                        f"{err.strip()}")
         return acts
 
     def _restore_process_creation(self):
@@ -376,6 +396,13 @@ class WindowsEventBackend:
                  "REG_DWORD", "/d", str(state["cmdline_was"]), "/f"],
                 runner=self.runner)
             acts.append(f"reg cmdline restore rc={rc} {err.strip()}")
+        if state.get("log_max_was"):
+            rc, _, err = platforms.run(
+                ["wevtutil", "sl", "Security",
+                 f"/ms:{state['log_max_was']}"], runner=self.runner)
+            acts.append(f"security-log size restore "
+                        f"({state['log_max_was']}B) rc={rc} "
+                        f"{err.strip()}")
         try:
             p.unlink()
         except OSError:
@@ -435,8 +462,9 @@ class WindowsEventBackend:
         verb = "AddAuditRule" if add else "RemoveAuditRuleAll"
         ps = (
             "$root='%s';"
-            "Get-ChildItem -LiteralPath $root -Recurse -Force "
-            "-ErrorAction SilentlyContinue | Select-Object -First %d |"
+            "$kids=@(Get-ChildItem -LiteralPath $root -Recurse -Force "
+            "-ErrorAction SilentlyContinue);"
+            "$kids | Select-Object -First %d |"
             "ForEach-Object{$p=$_.FullName;"
             "$flags=if($_.PSIsContainer){'ContainerInherit,ObjectInherit'}"
             "else{'None'};"
@@ -444,13 +472,20 @@ class WindowsEventBackend:
             "FileSystemAuditRule('Everyone','Read,Write,Delete,"
             "ChangePermissions,TakeOwnership',$flags,'None','Success');"
             "$acl=Get-Acl -LiteralPath $p -Audit;$acl.%s($rule);"
-            "Set-Acl -LiteralPath $p -AclObject $acl}"
-            % (esc, self._PROPAGATE_CAP, verb))
+            "Set-Acl -LiteralPath $p -AclObject $acl};"
+            "if($kids.Count -gt %d){'TRUNCATED '+$kids.Count}"
+            % (esc, self._PROPAGATE_CAP, verb, self._PROPAGATE_CAP))
         rc, out, err = platforms.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
             timeout=120, runner=self.runner)
-        return f"propagate-{'add' if add else 'del'} {dirpath}: " \
-               f"rc={rc} {err.strip()}"
+        action = f"propagate-{'add' if add else 'del'} {dirpath}: " \
+                 f"rc={rc} {err.strip()}"
+        m = re.search(r"TRUNCATED (\d+)", out or "")
+        if m:
+            action += (f" — WARNING: capped, stamped "
+                       f"{self._PROPAGATE_CAP} of {m.group(1)} children; "
+                       f"the rest are unaudited until replaced")
+        return action
 
     # FileSystemRights bit values we set — the Everyone+Success+
     # ChangePermissions+TakeOwnership combo is distinctive enough to serve
@@ -599,7 +634,11 @@ class WindowsEventBackend:
         except ValueError:
             pid = 0
         return AccessEvent(
-            ts=time.time(), path=cmd[:200], process=newproc, pid=pid,
+            # command lines can carry secrets (curl -H "Authorization:
+            # Bearer …", mysql -p…) — the Security log holds them raw,
+            # alerts.jsonl must not
+            ts=time.time(), path=secrets.redact(cmd)[:200],
+            process=newproc, pid=pid,
             access=sev, user=data.get("SubjectUserName", ""),
             detail=f"flag={flag} parent={pname}")
 
@@ -837,7 +876,7 @@ class Watcher:
                 sev = ("debug-launch" if procwatch.real_profile(
                     s["cmdline"]) else "debug-launch-info")
                 alerts.append(AccessEvent(
-                    time.time(), s["cmdline"][:200],
+                    time.time(), secrets.redact(s["cmdline"])[:200],
                     s.get("exe") or s["name"], s["pid"], sev,
                     detail=f"flag={s['flag']} "
                            f"parent={s.get('parent', '?')}({s['ppid']})"))

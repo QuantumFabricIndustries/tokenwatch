@@ -44,6 +44,22 @@ class TestSecrets(unittest.TestCase):
             self.assertNotIn(secret, h.masked)
             self.assertIn("...", h.masked)
 
+    def test_redact_cmdline_secrets(self):
+        """4688 command lines carry secrets — alerts.jsonl must hold only
+        masked forms."""
+        tok = "ghp_" + "Ab1" * 13
+        line = f'git clone https://{tok}@github.com/o/r && curl -H "x"'
+        out = secrets.redact(line)
+        self.assertNotIn(tok, out)
+        self.assertIn("ghp_", out)            # masked form keeps prefix
+        self.assertIn("git clone", out)       # non-secret text preserved
+        # nothing to redact -> identity
+        self.assertEqual(secrets.redact("cmd /c dir"), "cmd /c dir")
+        # generic assignment secrets redact too
+        secret = "Kx9mZ2pQ7vN4wL8jR3tY6uI1oP5aS0"
+        out = secrets.redact(f'run --arg api_key="{secret}"')
+        self.assertNotIn(secret, out)
+
     def test_scan_blob_binary(self):
         blob = (b"SQLite format 3\x00" + b"\x00" * 200 +
                 b"sk-proj-" + b"Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8" +

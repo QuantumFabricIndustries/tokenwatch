@@ -122,6 +122,22 @@ class Test4688Parsing(unittest.TestCase):
         # notepad-with-a-flag never reach the event list
         self.assertEqual(len(self._evs()), 2)
 
+    def test_cmdline_secrets_redacted_before_log(self):
+        """4688 command lines can carry secrets — the alert stores only
+        the masked form."""
+        tok = "ghp_" + "Ab1" * 13
+        ev = watch.WindowsEventBackend._event_4688({
+            "NewProcessName": "C:\\Program Files\\Google\\Chrome\\"
+                              "Application\\chrome.exe",
+            "CommandLine": "chrome.exe --remote-debugging-port=1 "
+                           f"https://{tok}@github.com/o/r",
+            "ParentProcessName": "C:\\Windows\\System32\\wscript.exe",
+            "NewProcessId": "0x99",
+        })
+        self.assertIsNotNone(ev)
+        self.assertNotIn(tok, ev.path)
+        self.assertIn("ghp_", ev.path)       # masked prefix survives
+
 
 class TestMarkerSacls(unittest.TestCase):
     """Inheritable parent-dir rule: files created by atomic replace are
@@ -170,6 +186,48 @@ class TestMarkerSacls(unittest.TestCase):
             self.assertTrue(any(
                 "Get-ChildItem" in s and "Recurse" in s
                 and "AddAuditRule" in s for s in ps))
+
+    def test_propagate_cap_warns_loudly(self):
+        """Truncation is not silent — the install action names the root,
+        the cap, and the real child count."""
+        class TruncRunner(FakeRunner):
+            def run(self, argv, timeout=30):
+                if argv[0] == "powershell" and \
+                        "Get-ChildItem" in argv[-1]:
+                    return 0, "TRUNCATED 620\n", ""
+                return super().run(argv, timeout)
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "store"
+            d.mkdir()
+            r = TruncRunner()
+            be = watch.WindowsEventBackend([str(d)], runner=r,
+                                           env={"HOME": td})
+            acts = be.install()
+            self.assertTrue(any(
+                "WARNING" in a and "620" in a and str(d).lower() in a
+                for a in acts))
+
+    def test_log_size_recorded_raised_restored(self):
+        """4688 volume rolls the ~20MB default Security log in hours —
+        install raises it, uninstall restores the recorded value."""
+        class GlRunner(FakeRunner):
+            def run(self, argv, timeout=30):
+                if argv[0] == "wevtutil" and argv[1] == "gl":
+                    return 0, "name: Security\nmaxSize: 20971520\n", ""
+                return super().run(argv, timeout)
+        with tempfile.TemporaryDirectory() as td:
+            r = GlRunner()
+            be = watch.WindowsEventBackend([ROOT], runner=r,
+                                           env={"HOME": td})
+            be.install()
+            self.assertTrue(any(
+                c[0] == "wevtutil" and c[1] == "sl"
+                and f"/ms:{watch.LOG_MAX_BYTES}" in c for c in r.calls))
+            r.calls.clear()
+            be.uninstall()
+            self.assertTrue(any(
+                c[0] == "wevtutil" and c[1] == "sl"
+                and "/ms:20971520" in c for c in r.calls))
 
 
 class TestAuditStateRestore(unittest.TestCase):

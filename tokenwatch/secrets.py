@@ -154,6 +154,41 @@ def scan_text(text, path):
     return hits
 
 
+def redact(text):
+    """Return text with detected secrets replaced by masked forms.
+
+    For lines we LOG rather than scan — 4688 command lines can carry
+    'curl -H "Authorization: Bearer …"', 'mysql -p…', 'git clone
+    https://token@…'. alerts.jsonl must never hold the raw value."""
+    if not text or not _STEMS.search(text):
+        return text
+    spans = []
+    for name, rx in PROVIDER_PATTERNS:
+        for m in rx.finditer(text):
+            # group(1) is the secret for assignment-style patterns, but
+            # some patterns group only a prefix alternation (ghp|gho|…)
+            # — masking 3 chars would leave the token body behind
+            g = (m.span(1) if m.lastindex and len(m.group(1)) > 8
+                 else m.span(0))
+            if not _is_example(text[g[0]:g[1]]):
+                spans.append((g[0], g[1], mask(text[g[0]:g[1]])))
+    for m in GENERIC_RE.finditer(text):
+        val = m.group(2)
+        if _generic_ok(val) and not _is_example(val):
+            spans.append((m.start(2), m.end(2), mask(val)))
+    if not spans:
+        return text
+    spans.sort()
+    out, last = [], 0
+    for a, b, rep in spans:
+        if a < last:
+            continue                     # overlap — already redacted
+        out += [text[last:a], rep]
+        last = b
+    out.append(text[last:])
+    return "".join(out)
+
+
 _TEXT_EXT = {".json", ".txt", ".md", ".yml", ".yaml", ".toml", ".ini",
              ".cfg", ".conf", ".env", ".xml", ".csv", ".log", ".history",
              ".py", ".js", ".ts", ".sh", ".ps1", ".rdl", ".jsonl", ""}

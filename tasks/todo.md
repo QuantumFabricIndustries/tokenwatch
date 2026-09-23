@@ -183,3 +183,17 @@ cached context — uncovered by gitguard/phantom-snare/iron-gates-xdr.
       reads a real key FILE (rglob returned the SID dir first).
 - [x] 112 tests green (incl. 4688 parse fixture, marker/drift/restore,
       classifier matrix)
+
+## Round 5b — 4688 side effects (user-directed follow-ups)
+- [x] secrets.redact(): 4688 command lines carry secrets (curl -H
+      Bearer, mysql -p, token@ URLs) — the tool must not create a new
+      leak. alerts.jsonl stores only masked forms. Group-1-is-prefix
+      patterns (ghp|gho|…) redact on group(0) — masking "ghp" alone
+      would leave the token body.
+- [x] Security log size: recorded + raised to 256MB at install (4688
+      volume on a dev box rolls the ~20MB default in hours), restored
+      on uninstall alongside auditpol/reg state.
+- [x] _propagate_sacl cap is loud: TRUNCATED line from PS -> install
+      action prints WARNING naming root + real child count.
+- [x] Caveats disclosed in install output + README boundaries.
+- [x] 117 tests green.

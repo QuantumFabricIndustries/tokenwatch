@@ -70,9 +70,15 @@ filtered, real-format keys still count.
   event 4663 polling via `wevtutil` — full per-process attribution (exe path,
   pid, access mask). AccessMask `WRITE_DAC`/`WRITE_OWNER` on a cred store is
   reported as `perm-change` (ACL takeover). Install also enables **Process
-  Creation (4688)** auditing plus `ProcessCreationIncludeCmdLine_Enabled`
-  — the prior state of both is recorded in `~/.tokenwatch/
-  audit_policy_state.json` and restored on `watch --uninstall`.
+  Creation (4688)** auditing plus `ProcessCreationIncludeCmdLine_Enabled`,
+  and raises the Security log max size to 256 MB (default ~20 MB rolls
+  over in hours on a dev box spawning thousands of processes).
+  Command lines are written into the Security log **raw** — that log is
+  admin-only, and `alerts.jsonl` runs every 4688 command line through
+  the secret redactor, but treat the Security log itself as sensitive
+  while watch is installed. Prior state of all three settings is
+  recorded in `~/.tokenwatch/audit_policy_state.json` and restored on
+  `watch --uninstall`.
 - **Linux**: `auditctl -w path -p rwa -k tokenwatch` + `ausearch` (needs root).
 - **Fallback** (macOS / no privileges): snapshot diff — detects writes and
   deletes only. **Reads are invisible in degraded mode**; the tool says so
@@ -193,8 +199,14 @@ Per-rule caps keep one noisy rule from dominating; the SUMMARY block prints
   the housekeeping pass isn't seen (auditd `execve` rules could close
   this; not wired in — it audits every exec on the box).
 - Enabling Process Creation auditing writes every launched command line
-  into the Security log — more noise and arguably sensitive; install
-  records prior settings and `watch --uninstall` restores them.
+  into the Security log — including secrets passed as arguments
+  (`curl -H "Authorization: Bearer …"`, `mysql -p…`, `git clone
+  https://token@…`). The log is admin-only and `alerts.jsonl` redacts
+  detected secret formats, but the raw log still holds them — a
+  deliberate, disclosed tradeoff for catching ABE-era cookie theft;
+  `watch --uninstall` restores prior settings.
+- Dir-root propagation stamps at most 500 existing children per dir —
+  hitting the cap prints a WARNING naming the root and real count.
 - A marker SACL removed *between* a file's deletion and its replacement
   could reopen the drift window until the next housekeeping verify —
   the backstop exists for exactly that residual case.
@@ -205,6 +217,6 @@ Per-rule caps keep one noisy rule from dominating; the SUMMARY block prints
 ## Tests
 
 ```bash
-python -m unittest discover tests   # 112 tests, all synthetic fixtures —
+python -m unittest discover tests   # 117 tests, all synthetic fixtures —
                                     # no real credentials or malware
 ```
