@@ -70,6 +70,82 @@ DEFAULT_ALLOW = [
      "path_contains": ".codeium"},
     {"name": "node.exe", "process_dir": "\\nvm\\",
      "path_contains": ".codeium"},
+
+    # browsers — real install dir + valid signature, object scoped to the
+    # browser's own profile paths (a legit chrome.exe reading .aws alerts)
+    {"name": "chrome.exe", "process_dir": "\\google\\chrome\\",
+     "signer": "Google", "path_contains": "google/chrome"},
+    {"name": "chrome", "process_dir": "\\google\\chrome\\",
+     "path_contains": "google-chrome"},          # linux /opt/google/chrome
+    {"name": "msedge.exe", "process_dir": "\\microsoft\\edge\\",
+     "signer": "Microsoft", "path_contains": "microsoft/edge"},
+    {"name": "brave.exe", "process_dir": "\\brave",
+     "signer": "Brave", "path_contains": "brave"},
+    {"name": "brave", "process_dir": "\\brave",
+     "path_contains": "brave"},                   # linux
+    {"name": "chromium", "process_dir": "chromium",
+     "path_contains": "chromium"},
+    {"name": "firefox.exe", "process_dir": "\\mozilla firefox\\",
+     "signer": "Mozilla", "path_contains": "firefox"},
+    {"name": "firefox", "process_dir": "\\firefox\\",
+     "path_contains": "firefox"},                 # linux /usr/lib/firefox
+    {"name": "thunderbird.exe", "process_dir": "thunderbird",
+     "signer": "Mozilla", "path_contains": "thunderbird"},
+    {"name": "thunderbird", "process_dir": "thunderbird",
+     "path_contains": "thunderbird"},
+    {"name": "opera.exe", "process_dir": "\\opera",
+     "path_contains": "opera"},
+    {"name": "launcher.exe", "process_dir": "\\opera",
+     "path_contains": "opera"},
+    {"name": "opera", "process_dir": "\\opera",
+     "path_contains": "opera"},                   # linux
+
+    # messaging / wallets / tools — dir + object anchored
+    {"name": "discord.exe", "process_dir": "\\discord",
+     "path_contains": "discord"},
+    {"name": "discord", "process_dir": "\\discord",
+     "path_contains": "discord"},
+    {"name": "telegram.exe", "process_dir": "\\telegram",
+     "path_contains": "telegram"},
+    {"name": "telegram", "process_dir": "\\telegram",
+     "path_contains": "telegram"},
+    {"name": "signal.exe", "process_dir": "\\signal",
+     "path_contains": "signal"},
+    {"name": "slack.exe", "process_dir": "\\slack",
+     "path_contains": "slack"},
+    {"name": "filezilla.exe", "process_dir": "filezilla",
+     "path_contains": "filezilla"},
+    {"name": "winscp.exe", "process_dir": "winscp",
+     "path_contains": "winscp"},
+    {"name": "postman.exe", "process_dir": "\\postman",
+     "path_contains": "postman"},
+    {"name": "insomnia.exe", "process_dir": "\\insomnia",
+     "path_contains": "insomnia"},
+    {"name": "bitwarden.exe", "process_dir": "\\bitwarden",
+     "path_contains": "bitwarden"},
+    {"name": "1password.exe", "process_dir": "\\1password",
+     "path_contains": "1password"},
+    {"name": "exodus.exe", "process_dir": "\\exodus",
+     "path_contains": "exodus"},
+    {"name": "electrum.exe", "process_dir": "\\electrum",
+     "path_contains": "electrum"},
+    {"name": "electrum", "process_dir": "\\electrum",
+     "path_contains": "electrum"},
+    {"name": "steam.exe", "process_dir": "\\steam\\",
+     "path_contains": "steam"},
+    {"name": "steamwebhelper.exe", "process_dir": "\\steam\\",
+     "path_contains": "steam"},
+    # JetBrains ships many exe names (idea64, pycharm64, ...) — scope by
+    # process + object dirs instead of enumerating binaries
+    {"process_contains": "jetbrains", "path_contains": "jetbrains"},
+
+    # DPAPI master keys + Credential Manager: legitimate reads flow through
+    # lsass/vaultsvc — a user process touching Protect/Credentials/Vault
+    # files directly is the tell
+    {"name": "lsass.exe", "process_dir": "\\windows\\system32\\",
+     "signer": "Microsoft", "path_contains": "microsoft/"},
+    {"name": "svchost.exe", "process_dir": "\\windows\\system32\\",
+     "signer": "Microsoft", "path_contains": "microsoft/"},
 ]
 
 

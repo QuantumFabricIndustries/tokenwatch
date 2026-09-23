@@ -12,13 +12,22 @@ directory* and *in agent transcript caches*.
 
 ## What it watches
 
-~45 known store locations across agent tooling:
+~80 known store locations across agent tooling **and the classic
+infostealer surface**:
 
 | Class | Stores |
 |---|---|
-| **Agent creds** | `~/.claude` (+`.credentials.json`, `.claude.json`), `~/.codex`, `~/.config/devin`, `~/.gemini/oauth_creds.json`, Cursor `state.vscdb`, VS Code `globalStorage`, Copilot `apps.json`, Aider, Continue, Windsurf/`.codeium`, Zed |
+| **Agent creds** | `~/.claude` (+`.credentials.json`, `.claude.json`), `~/.codex`, `~/.config/devin`, `~/.gemini/oauth_creds.json`, Cursor `state.vscdb`, VS Code `globalStorage`, Copilot `apps.json`, Aider, Continue, Windsurf/`.codeium`, Zed, OpenCode, Goose, Amp, Factory Droid, Qwen Code, Kiro |
 | **MCP configs** | `~/.cursor/mcp.json`, `claude_desktop_config.json`, `~/.codeium/windsurf/mcp_config.json`, `~/.vscode/mcp.json` — per-server plaintext API keys |
-| **Dev creds** | `.aws`, `.ssh`, `.kube`, `.docker`, `.netrc`, `.git-credentials`, gh/gcloud/azure token caches, `.npmrc`, `.pypirc`, HF token, terraform, cargo, gem, composer, maven, gradle, `.gnupg`, ollama key, configstore, vercel/netlify/railway |
+| **Dev creds** | `.aws`, `.ssh`, `.kube`, `.docker`, `.netrc`, `.git-credentials`, gh/gcloud/azure token caches, `.npmrc`, `.pypirc`, HF token, terraform, cargo, gem, composer, maven, gradle, `.gnupg`, ollama key, configstore, vercel/netlify/railway, `NuGet.Config`, `.pgpass`, `.my.cnf`, `.s3cfg`, `.boto`, `rclone.conf`, doctl, ngrok, svn auth |
+| **Browser creds** | Chrome/Edge/Brave/Chromium/Opera `Local State` (the DPAPI key blob), `Login Data`, `Cookies`, `Web Data` per profile; Firefox/Thunderbird `logins.json`+`key4.db`+`cookies.sqlite` — session-cookie theft = MFA-immune replay |
+| **Browser wallet exts** | MetaMask + Phantom vault leveldb under Chrome/Brave/Edge profiles |
+| **OS cred infra** | `%APPDATA%/Microsoft/Protect` (DPAPI master keys), `Microsoft/Credentials`, `Microsoft/Vault` — decrypts everything else on the box |
+| **Messaging** | Discord/Slack leveldb tokens, Telegram `tdata` session keys, Signal `config.json` db key |
+| **Password managers** | Bitwarden `data.json`, 1Password vault dirs — encrypted but exfil'd for offline crack |
+| **Crypto wallets** | Exodus, Electrum, Bitcoin Core `wallet.dat`, Ethereum keystore, Solana `id.json` |
+| **Remote access** | FileZilla `sitemanager.xml`, WinSCP.ini, mRemoteNG `confCons.xml`, OpenVPN profiles, AnyDesk, TeamViewer, Steam `ssfn`+config, JetBrains `c.kdbx` |
+| **API dev tools** | Postman + Insomnia leveldb/IndexedDB token caches |
 | **Cached context** | `.claude/projects` transcripts, codex sessions, windsurf cascade `.pb`, PSReadLine `ConsoleHost_history.txt`, `.bash_history`/`.zsh_history` — where pasted secrets go to live forever |
 
 ## Commands
@@ -83,6 +92,11 @@ match (AND):
   agent binaries to their install directories (e.g. `Cursor.exe` only under
   a `cursor` dir, `node.exe` only under `nodejs`/`nvm` AND only for
   `.claude`/`.codeium` objects)
+- browsers are scoped to their *own* profile paths: a legit `chrome.exe`
+  reading `.aws` still alerts. DPAPI master keys (`Microsoft/Protect`,
+  `Credentials`, `Vault`) only allow `lsass.exe`/`svchost.exe` signed
+  Microsoft from `\Windows\System32` — a user process touching them
+  directly is the classic stealer tell
 
 Everything else that touches a watched store lands in
 `~/.tokenwatch/alerts.jsonl`.
@@ -94,7 +108,8 @@ must be absent AND the auto-reading tool must not be installed (`aws`,
 `git config credential.helper` must not be `store`; an existing
 `~/.aws/config` means env/SSO auth is in use → skip). Otherwise a decoy
 would shadow real credentials and fire on every legitimate call. Strays
-(`~/.env.backup`, `~/.ssh/id_rsa.bak`) plant unconditionally — nothing
+(`~/.env.backup`, `~/.ssh/id_rsa.bak`, `~/passwords.txt`,
+`~/seed_phrase.txt`, `~/wallet.dat.bak`) plant unconditionally — nothing
 auto-reads them. Values are realistic-format random keys with no marker
 strings; the manifest is keyed by `sha256(path)` so
 `~/.tokenwatch/honey.json` reveals no locations. Any access = a
@@ -133,10 +148,20 @@ Per-rule caps keep one noisy rule from dominating; the SUMMARY block prints
 - macOS watch is snapshot-only (Endpoint Security needs a signed entitlement);
   Linux watch needs auditd+root. Audit/inventory work everywhere.
 - `.pb` protobuf cascades >16 MiB/file are stat'ed but not scanned.
+- Browser/profile globs (`User Data/*/Login Data`, `Profiles/*/logins.json`)
+  resolve to concrete paths at discover/install time — a browser profile
+  created *after* `watch` installs isn't watched until you re-run
+  `watch --uninstall` + `watch`.
+- This guards tokens **at rest**. AiTM proxy kits and OAuth device-code
+  phishing capture tokens server-side — they never touch these files, and
+  detecting replay needs cloud sign-in telemetry, which is out of scope.
+- Chrome's App-Bound Encryption means cookie *decryption* must run inside
+  Chrome's own process; file theft still happens (attackers copy `Cookies` +
+  `Local State` and inject/elevate later) — that's the access this detects.
 
 ## Tests
 
 ```bash
-python -m unittest discover tests   # 42 tests, all synthetic fixtures —
+python -m unittest discover tests   # 89 tests, all synthetic fixtures —
                                     # no real credentials or malware
 ```

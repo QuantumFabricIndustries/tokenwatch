@@ -79,6 +79,41 @@ class TestSecrets(unittest.TestCase):
             big.write_bytes(b"A" * (secrets.MAX_FILE_BYTES + 1))
             self.assertEqual(secrets.scan_file(big, max_bytes=1024), [])
 
+    def test_discord_tokens(self):
+        # mfa.* variant and standard 24.6.27-part tokens
+        hits = secrets.scan_text(
+            "token = mfa." + "aB3-" * 15, "f")
+        self.assertTrue(any(h.pattern == "discord-token" for h in hits))
+        std = ("MTIzNDU2Nzg5MDEyMzQ1Njc4."
+               "GaBcDe."
+               + "xY9z" * 8)
+        hits = secrets.scan_text(f"\"{std}\"", "f")
+        self.assertTrue(any(h.pattern == "discord-token" for h in hits))
+
+    def test_slack_xoxd_xapp(self):
+        for tok in ("xoxd-" + "aB3" * 12, "xapp-" + "Z9y" * 12):
+            hits = secrets.scan_text(f"t: {tok}", "f")
+            self.assertTrue(any(h.pattern == "slack-token" for h in hits),
+                            tok)
+
+    def test_filezilla_pass(self):
+        hits = secrets.scan_text(
+            '<Server><Pass>Sup3rSecretFTP</Pass></Server>', "f")
+        self.assertTrue(any(h.pattern == "filezilla-pass" for h in hits))
+        # base64-encoded Pass doesn't match (value isn't plaintext)
+        hits = secrets.scan_text(
+            '<Pass encoding="base64">U3VwM3I=</Pass>', "f")
+        self.assertFalse(any(h.pattern == "filezilla-pass" for h in hits))
+
+    def test_generic_bare_pass(self):
+        # rclone.conf uses `pass = ...` — bare 'pass' now in alternation
+        hits = secrets.scan_text(
+            "pass = " + "Kx9mZ2pQ7vN4wL8jR3tY", "f")
+        self.assertTrue(any(h.generic for h in hits))
+        # word-boundary: 'compass'/'bypass' must not trigger
+        self.assertFalse(secrets.scan_text(
+            'bypass = "Kx9mZ2pQ7vN4wL8jR3tY"', "f"))
+
 
 if __name__ == "__main__":
     unittest.main()

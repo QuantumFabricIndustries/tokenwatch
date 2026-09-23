@@ -100,6 +100,31 @@ def _git_creds(tok):
             f"https://bot:ghp_{_sec.token_hex(18)}@github.com\n")
 
 
+def _passwords_txt(tok):
+    return ("amazon.com   j.miller88      Kj9!mP2vxqW\n"
+            f"netflix.com  j.miller88      {_sec.token_hex(8)}\n"
+            f"chase.com    jmiller1988     {_sec.token_hex(10)}\n")
+
+
+_SEED_WORDS = ("abandon ability able about above absent absorb abstract "
+               "accident account accuse achieve acid acoustic acquire "
+               "across action actor actress adapt add address adjust "
+               "admit adult advance advice aerobic affair afford afraid "
+               "again age agent agree ahead aim air airport aisle alarm "
+               "album alcohol alert alien all alley allow almost alone "
+               "alpha already also alter always amateur amazing among").split()
+
+
+def _seed_phrase(tok):
+    words = [_sec.choice(_SEED_WORDS) for _ in range(12)]
+    return ("metamask wallet - keep offline\n"
+            " ".join(words) + "\n")
+
+
+def _wallet_bak(tok):
+    return "\n".join(_sec.token_hex(20) for _ in range(8)) + "\n"
+
+
 def _docker_cfg(tok):
     import base64
     auth = base64.b64encode(f"user:{_sec.token_hex(16)}".encode()).decode()
@@ -128,6 +153,12 @@ def decoys(env=None, platform=None):
          "stray env backup — classic stealer glob target", None),
         ("ssh-key-bak", home / ".ssh" / "id_rsa.bak", _ssh_key,
          "stray key backup — nothing auto-reads it", None),
+        ("passwords-txt", home / "passwords.txt", _passwords_txt,
+         "stealer glob target — nothing legit reads it", None),
+        ("seed-phrase", home / "seed_phrase.txt", _seed_phrase,
+         "crypto seed backup — classic drainer target", None),
+        ("wallet-bak", home / "wallet.dat.bak", _wallet_bak,
+         "stray wallet backup — exfil-by-name target", None),
     ]
 
 

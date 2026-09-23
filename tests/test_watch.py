@@ -156,6 +156,104 @@ class TestAllowlist(unittest.TestCase):
         self.assertTrue(al.allows(self._ev("C:\\bin\\myagent.exe")))
 
 
+class SignedRunner(FakeRunner):
+    """Authenticode: returns a Google/Microsoft/Mozilla subject for the
+    matching install dirs; everything else unsigned."""
+    def run(self, argv, timeout=30):
+        if argv[0] == "powershell" and \
+                "Get-AuthenticodeSignature" in argv[-1]:
+            cmd = argv[-1]
+            for marker, cn in (("\\Google\\Chrome\\", "CN=Google LLC"),
+                               ("\\Mozilla Firefox\\", "CN=Mozilla"),
+                               ("\\Windows\\System32\\", "CN=Microsoft"),
+                               ("\\Windows\\", "CN=Microsoft")):
+                if marker.lower() in cmd.lower():
+                    return 0, cn + "\n", ""
+            return 0, "", ""
+        return super().run(argv, timeout)
+
+
+class TestStealerAllowlist(unittest.TestCase):
+    """New stores' legitimate readers allowlisted; everything else alerts."""
+
+    def _al(self, td):
+        return watch.Allowlist(Path(td), runner=SignedRunner(),
+                               platform="windows")
+
+    def _ev(self, proc, path, pid=100):
+        return watch.AccessEvent(0, path, proc, pid, "read")
+
+    CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    LSASS = "C:\\Windows\\System32\\lsass.exe"
+
+    def test_chrome_allowed_on_own_profile(self):
+        with tempfile.TemporaryDirectory() as td:
+            al = self._al(td)
+            self.assertTrue(al.allows(self._ev(
+                self.CHROME,
+                "C:\\Users\\reven\\AppData\\Local\\Google\\Chrome\\"
+                "User Data\\Default\\Login Data")))
+
+    def test_chrome_denied_off_profile(self):
+        """A real chrome.exe touching .aws is still suspicious."""
+        with tempfile.TemporaryDirectory() as td:
+            al = self._al(td)
+            self.assertFalse(al.allows(self._ev(
+                self.CHROME, "C:\\Users\\reven\\.aws\\credentials")))
+
+    def test_unsigned_chrome_denied(self):
+        """chrome.exe in the right dir but unsigned -> deny (fail closed)."""
+        with tempfile.TemporaryDirectory() as td:
+            al = watch.Allowlist(Path(td), runner=FakeRunner(),
+                                 platform="windows")
+            self.assertFalse(al.allows(self._ev(
+                self.CHROME,
+                "C:\\Users\\reven\\AppData\\Local\\Google\\Chrome\\"
+                "User Data\\Local State")))
+
+    def test_lsass_reads_dpapi(self):
+        with tempfile.TemporaryDirectory() as td:
+            al = self._al(td)
+            self.assertTrue(al.allows(self._ev(
+                self.LSASS,
+                "C:\\Users\\reven\\AppData\\Roaming\\Microsoft\\Protect\\"
+                "S-1-5-21\\mk-guid")))
+
+    def test_user_proc_on_dpapi_denied(self):
+        """The whole point: a random user process on Protect/ = stealer."""
+        with tempfile.TemporaryDirectory() as td:
+            al = self._al(td)
+            self.assertFalse(al.allows(self._ev(
+                "C:\\Users\\reven\\AppData\\Local\\Temp\\upd.exe",
+                "C:\\Users\\reven\\AppData\\Roaming\\Microsoft\\Protect\\"
+                "S-1-5-21\\mk-guid")))
+
+    def test_discord_own_leveldb(self):
+        with tempfile.TemporaryDirectory() as td:
+            al = self._al(td)
+            self.assertTrue(al.allows(self._ev(
+                "C:\\Users\\reven\\AppData\\Local\\Discord\\app-1.0\\"
+                "Discord.exe",
+                "C:\\Users\\reven\\AppData\\Roaming\\discord\\"
+                "Local Storage\\leveldb\\0005.ldb")))
+
+    def test_spoofed_discord_denied(self):
+        with tempfile.TemporaryDirectory() as td:
+            al = self._al(td)
+            self.assertFalse(al.allows(self._ev(
+                "C:\\Temp\\Discord.exe",
+                "C:\\Users\\reven\\AppData\\Roaming\\discord\\"
+                "Local Storage\\leveldb\\0005.ldb")))
+
+    def test_firefox_signed(self):
+        with tempfile.TemporaryDirectory() as td:
+            al = self._al(td)
+            self.assertTrue(al.allows(self._ev(
+                "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
+                "C:\\Users\\reven\\AppData\\Roaming\\Mozilla\\Firefox\\"
+                "Profiles\\abc.default\\logins.json")))
+
+
 class TestWatcher(unittest.TestCase):
     def test_poll_once_filters_and_logs(self):
         with tempfile.TemporaryDirectory() as td:

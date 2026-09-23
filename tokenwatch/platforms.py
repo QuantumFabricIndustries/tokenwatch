@@ -74,7 +74,7 @@ def home(env=None):
 
 
 def expand(spec, env=None, platform=None):
-    """Expand {HOME} {APPDATA} {LOCALAPPDATA} {CONFIG} tokens + ~ in a spec."""
+    """Expand {HOME} {APPDATA} {LOCALAPPDATA} {CONFIG} {PF86} {PF} + ~."""
     env = env if env is not None else os.environ
     platform = platform or PLATFORM
     h = str(home(env))
@@ -82,16 +82,23 @@ def expand(spec, env=None, platform=None):
         appdata = env.get("APPDATA", h + "\\AppData\\Roaming")
         local = env.get("LOCALAPPDATA", h + "\\AppData\\Local")
         config = appdata
+        pf86 = env.get("ProgramFiles(x86)",
+                       env.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"))
+        pf = env.get("ProgramFiles", env.get("PROGRAMFILES",
+                                             "C:\\Program Files"))
     elif platform == "darwin":
         appdata = local = h + "/Library/Application Support"
         config = h + "/.config"
+        pf86 = pf = "/Applications"
     else:
         appdata = local = env.get("XDG_CONFIG_HOME", h + "/.config")
         config = env.get("XDG_CONFIG_HOME", h + "/.config")
+        pf86 = pf = "/opt"
     out = spec.replace("{HOME}", h).replace("~", h)
     out = out.replace("{APPDATA}", appdata)
     out = out.replace("{LOCALAPPDATA}", local)
     out = out.replace("{CONFIG}", config)
+    out = out.replace("{PF86}", pf86).replace("{PF}", pf)
     return Path(out)
 
 

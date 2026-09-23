@@ -105,6 +105,12 @@ _EXPECTED_CRED_NAMES = {
     ".pypirc", "token", "google_accounts.json", "apps.json",
     "config.json", ".envrc", "settings.xml",
     "gradle.properties", "nuget.config",
+    # stealer-target stores — files whose purpose IS credential storage
+    "local state", "login data", "web data", "cookies", "cookies.sqlite",
+    "logins.json", "key4.db", "sitemanager.xml", "recentservers.xml",
+    "winscp.ini", "confcons.xml", "rclone.conf", ".pgpass", "pgpass.conf",
+    ".my.cnf", ".s3cfg", ".boto", "ngrok.yml", "wallet.dat", "c.kdbx",
+    "tdata",
 }
 _KEY_PREFIXES = ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa")
 

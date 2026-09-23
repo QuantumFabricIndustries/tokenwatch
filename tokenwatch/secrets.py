@@ -29,7 +29,14 @@ PROVIDER_PATTERNS = [
     ("google-api",      re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("hf-token",        re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")),
     ("pypi-token",      re.compile(r"\bpypi-AgEI[A-Za-z0-9_-]{20,}\b")),
-    ("slack-token",     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    ("slack-token",     re.compile(r"\bxox[baprsocde]-[A-Za-z0-9-]{10,}\b"
+                                   r"|\bxapp-[A-Za-z0-9-]{10,}\b")),
+    ("discord-token",   re.compile(r"\bmfa\.[A-Za-z0-9_-]{20,}\b"
+                                   r"|\b[MN][A-Za-z0-9_-]{23}\."
+                                   r"[A-Za-z0-9_-]{6}\."
+                                   r"[A-Za-z0-9_-]{27,}\b")),
+    ("filezilla-pass",  re.compile(r"(?i)<Pass(?:\s+encoding=\"plaintext\")?>"
+                                   r"([^<]{6,})</Pass>")),
     ("stripe-key",      re.compile(r"\b[sr]k_(live|test)_[A-Za-z0-9]{16,}\b")),
     ("jwt",             re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
     ("npm-token",       re.compile(r"(?i)_authToken\s*=\s*([A-Za-z0-9-]{20,})")),
@@ -40,16 +47,18 @@ PROVIDER_PATTERNS = [
 
 # generic "key = value" — entropy-gated to kill false positives
 GENERIC_RE = re.compile(
-    r"(?i)\b(api[_-]?key|apikey|secret|token|password|passwd|pwd|"
+    r"(?i)\b(api[_-]?key|apikey|secret|token|password|passwd|pwd|pass|"
     r"access[_-]?key|auth[_-]?token|client[_-]?secret|private[_-]?key)"
     r"[\s'\"]*[:=][\s'\"]*([A-Za-z0-9_\-./+~$]{16,})")
 
 # one cheap literal-stem pass: files with no stem skip every pattern below
 _STEMS = re.compile(
     r"AKIA|gh[pousr]_|github_pat_|sk-ant-|sk-proj-|sk-svcacct-|sk-[A-Za-z0-9]"
-    r"|AIza|hf_|pypi-AgEI|xox[baprs]-|[sr]k_(?:live|test)_|eyJ|_authToken"
+    r"|AIza|hf_|pypi-AgEI|xox[a-z]-|xapp-|mfa\.|<Pass|[sr]k_(?:live|test)_"
+    r"|[\w-]{24}\.[\w-]{6}\."          # discord 3-part token shape
+    r"|eyJ|_authToken"
     r"|PRIVATE KEY|private_key|[Bb]earer|api[_-]?key|apikey|secret|token"
-    r"|password|passwd|access[_-]?key|auth[_-]?token|client[_-]?secret",
+    r"|password|passwd|pass|access[_-]?key|auth[_-]?token|client[_-]?secret",
     re.IGNORECASE)
 
 

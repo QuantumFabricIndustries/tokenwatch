@@ -1,4 +1,6 @@
-"""Registry of credential + cached-context stores for AI agents and dev tools.
+"""Registry of credential + cached-context stores for AI agents, dev tools,
+and the classic infostealer targets (browsers, messaging, wallets, OS cred
+infrastructure).
 
 Each StoreSpec describes where a class of secrets lives per-OS. `discover()`
 resolves specs against an env map (injectable for tests) and returns the
@@ -8,8 +10,17 @@ kind:    token | key | config | context
 sensitive: True  -> must be owner-only (perm-enforced, watch target)
            False -> context/history (secret-scan target, perm findings are
                     informational since some tools ship loose defaults)
+glob:    True  -> path entries are glob patterns (any segment may contain *),
+                    resolved to concrete existing paths at discover() time.
+                    New profiles created later need a re-run/re-install.
+
+Stealer-facing specs point at the SENSITIVE FILES (Login Data, Cookies,
+Local State, leveldb dirs) rather than the whole profile dir — a SACL on
+e.g. Chrome's entire "User Data" would drown the Security log in cache
+writes. Legit readers are allowlisted per-process in watch.DEFAULT_ALLOW.
 """
 import fnmatch
+import glob as _glob
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -215,6 +226,278 @@ STORES = [
     StoreSpec("aider-history", "Aider", "context",
               _p(posix=["{HOME}/.aider.chat.history.md"]),
               "chat history", sensitive=False),
+
+    # --- Newer agent tooling (auth.json / config trees) ---------------------
+    StoreSpec("opencode", "OpenCode", "token",
+              _p(posix=["{HOME}/.local/share/opencode",
+                        "{HOME}/.config/opencode"]),
+              "auth.json OAuth tokens, sessions"),
+    StoreSpec("goose", "Block Goose", "token",
+              _p(posix=["{HOME}/.config/goose"]),
+              "profiles + provider keys"),
+    StoreSpec("amp", "Sourcegraph Amp", "token",
+              _p(posix=["{HOME}/.config/amp"]),
+              "api key, secrets.json"),
+    StoreSpec("factory", "Factory Droid", "token",
+              _p(posix=["{HOME}/.factory"]),
+              "auth tokens, settings"),
+    StoreSpec("qwen-code", "Qwen Code", "token",
+              _p(posix=["{HOME}/.qwen"]),
+              "oauth_creds.json, settings"),
+    StoreSpec("kiro", "Kiro", "token",
+              _p(posix=["{HOME}/.kiro"]),
+              "auth tokens, MCP configs"),
+
+    # --- Browser credential stores (top infostealer target) -----------------
+    # Cookies + Local State together = DPAPI key + session cookies =
+    # MFA-immune account replay. File-level specs: watching the whole
+    # "User Data" dir would flood the Security log with cache writes.
+    StoreSpec("chrome-secrets", "Chrome", "token",
+              _p(win=["{LOCALAPPDATA}/Google/Chrome/User Data/Local State",
+                      "{LOCALAPPDATA}/Google/Chrome/User Data/*/Login Data",
+                      "{LOCALAPPDATA}/Google/Chrome/User Data/*/Web Data",
+                      "{LOCALAPPDATA}/Google/Chrome/User Data/*/Cookies",
+                      "{LOCALAPPDATA}/Google/Chrome/User Data/*/Network/Cookies"],
+                 darwin=["{HOME}/Library/Application Support/Google/Chrome/Local State",
+                         "{HOME}/Library/Application Support/Google/Chrome/*/Login Data",
+                         "{HOME}/Library/Application Support/Google/Chrome/*/Cookies"],
+                 linux=["{HOME}/.config/google-chrome/Local State",
+                        "{HOME}/.config/google-chrome/*/Login Data",
+                        "{HOME}/.config/google-chrome/*/Web Data",
+                        "{HOME}/.config/google-chrome/*/Cookies",
+                        "{HOME}/.config/google-chrome/*/Network/Cookies"]),
+              "Local State (DPAPI key), Login Data, session cookies",
+              glob=True),
+    StoreSpec("edge-secrets", "Edge", "token",
+              _p(win=["{LOCALAPPDATA}/Microsoft/Edge/User Data/Local State",
+                      "{LOCALAPPDATA}/Microsoft/Edge/User Data/*/Login Data",
+                      "{LOCALAPPDATA}/Microsoft/Edge/User Data/*/Web Data",
+                      "{LOCALAPPDATA}/Microsoft/Edge/User Data/*/Cookies",
+                      "{LOCALAPPDATA}/Microsoft/Edge/User Data/*/Network/Cookies"],
+                 darwin=["{HOME}/Library/Application Support/Microsoft Edge/Local State",
+                         "{HOME}/Library/Application Support/Microsoft Edge/*/Login Data",
+                         "{HOME}/Library/Application Support/Microsoft Edge/*/Cookies"],
+                 linux=["{HOME}/.config/microsoft-edge/Local State",
+                        "{HOME}/.config/microsoft-edge/*/Login Data",
+                        "{HOME}/.config/microsoft-edge/*/Cookies"]),
+              "Local State (DPAPI key), Login Data, session cookies",
+              glob=True),
+    StoreSpec("brave-secrets", "Brave", "token",
+              _p(win=["{LOCALAPPDATA}/BraveSoftware/Brave-Browser/User Data/Local State",
+                      "{LOCALAPPDATA}/BraveSoftware/Brave-Browser/User Data/*/Login Data",
+                      "{LOCALAPPDATA}/BraveSoftware/Brave-Browser/User Data/*/Cookies",
+                      "{LOCALAPPDATA}/BraveSoftware/Brave-Browser/User Data/*/Network/Cookies"],
+                 darwin=["{HOME}/Library/Application Support/BraveSoftware/Brave-Browser/Local State",
+                         "{HOME}/Library/Application Support/BraveSoftware/Brave-Browser/*/Login Data",
+                         "{HOME}/Library/Application Support/BraveSoftware/Brave-Browser/*/Cookies"],
+                 linux=["{HOME}/.config/BraveSoftware/Brave-Browser/Local State",
+                        "{HOME}/.config/BraveSoftware/Brave-Browser/*/Login Data",
+                        "{HOME}/.config/BraveSoftware/Brave-Browser/*/Cookies"]),
+              "Local State (DPAPI key), Login Data, session cookies",
+              glob=True),
+    StoreSpec("chromium-secrets", "Chromium", "token",
+              _p(win=["{LOCALAPPDATA}/Chromium/User Data/Local State",
+                      "{LOCALAPPDATA}/Chromium/User Data/*/Login Data",
+                      "{LOCALAPPDATA}/Chromium/User Data/*/Cookies"],
+                 darwin=["{HOME}/Library/Application Support/Chromium/Local State",
+                         "{HOME}/Library/Application Support/Chromium/*/Login Data"],
+                 linux=["{HOME}/.config/chromium/Local State",
+                        "{HOME}/.config/chromium/*/Login Data",
+                        "{HOME}/.config/chromium/*/Cookies"]),
+              "Local State, Login Data, cookies", glob=True),
+    StoreSpec("opera-secrets", "Opera", "token",
+              _p(win=["{APPDATA}/Opera Software/Opera*/Local State",
+                      "{APPDATA}/Opera Software/Opera*/Login Data",
+                      "{APPDATA}/Opera Software/Opera*/Cookies",
+                      "{APPDATA}/Opera Software/Opera*/Network/Cookies"],
+                 darwin=["{HOME}/Library/Application Support/com.operasoftware.Opera*/Local State",
+                         "{HOME}/Library/Application Support/com.operasoftware.Opera*/Login Data"],
+                 linux=["{HOME}/.config/opera*/Local State",
+                        "{HOME}/.config/opera*/Login Data",
+                        "{HOME}/.config/opera*/Cookies"]),
+              "Local State, Login Data, cookies", glob=True),
+    StoreSpec("firefox-secrets", "Firefox", "token",
+              _p(win=["{APPDATA}/Mozilla/Firefox/Profiles/*/logins.json",
+                      "{APPDATA}/Mozilla/Firefox/Profiles/*/key4.db",
+                      "{APPDATA}/Mozilla/Firefox/Profiles/*/cookies.sqlite"],
+                 darwin=["{HOME}/Library/Application Support/Firefox/Profiles/*/logins.json",
+                         "{HOME}/Library/Application Support/Firefox/Profiles/*/key4.db",
+                         "{HOME}/Library/Application Support/Firefox/Profiles/*/cookies.sqlite"],
+                 linux=["{HOME}/.mozilla/firefox/*/logins.json",
+                        "{HOME}/.mozilla/firefox/*/key4.db",
+                        "{HOME}/.mozilla/firefox/*/cookies.sqlite"]),
+              "key4.db (master key) + logins.json, session cookies",
+              glob=True),
+    StoreSpec("thunderbird-secrets", "Thunderbird", "token",
+              _p(win=["{APPDATA}/Thunderbird/Profiles/*/logins.json",
+                      "{APPDATA}/Thunderbird/Profiles/*/key4.db"],
+                 darwin=["{HOME}/Library/Thunderbird/Profiles/*/logins.json",
+                         "{HOME}/Library/Thunderbird/Profiles/*/key4.db"],
+                 linux=["{HOME}/.thunderbird/*/logins.json",
+                        "{HOME}/.thunderbird/*/key4.db"]),
+              "mailbox credentials", glob=True),
+
+    # --- Browser crypto-wallet extensions (drainer targets) -----------------
+    StoreSpec("wallet-ext", "Wallet extensions", "token",
+              _p(win=["{LOCALAPPDATA}/Google/Chrome/User Data/*/Local Extension Settings/nkbihfbeogaeaoehlefnkodbefgpgknn",
+                      "{LOCALAPPDATA}/BraveSoftware/Brave-Browser/User Data/*/Local Extension Settings/nkbihfbeogaeaoehlefnkodbefgpgknn",
+                      "{LOCALAPPDATA}/Microsoft/Edge/User Data/*/Local Extension Settings/ejbalbakoplchlghecdalmeeeajnimhm",
+                      "{LOCALAPPDATA}/Google/Chrome/User Data/*/Local Extension Settings/bfnaelmomeimhlpmgjnjophhpkkoljpa",
+                      "{LOCALAPPDATA}/BraveSoftware/Brave-Browser/User Data/*/Local Extension Settings/bfnaelmomeimhlpmgjnjophhpkkoljpa"],
+                 darwin=["{HOME}/Library/Application Support/Google/Chrome/*/Local Extension Settings/nkbihfbeogaeaoehlefnkodbefgpgknn"],
+                 linux=["{HOME}/.config/google-chrome/*/Local Extension Settings/nkbihfbeogaeaoehlefnkodbefgpgknn"]),
+              "MetaMask/Phantom encrypted vault leveldb", glob=True),
+
+    # --- Windows credential infrastructure ---------------------------------
+    # Legit DPAPI/CredMan access flows through lsass/vaultsvc on modern
+    # Windows — a user process reading these files directly IS the tell.
+    StoreSpec("win-cred-infra", "Windows cred infra", "key",
+              _p(win=["{APPDATA}/Microsoft/Protect",
+                      "{APPDATA}/Microsoft/Credentials",
+                      "{LOCALAPPDATA}/Microsoft/Credentials",
+                      "{LOCALAPPDATA}/Microsoft/Vault"]),
+              "DPAPI master keys, Credential Manager, vault — decrypts "
+              "everything above"),
+
+    # --- Messaging / session tokens -----------------------------------------
+    StoreSpec("discord-tokens", "Discord", "token",
+              _p(win=["{APPDATA}/discord*/Local Storage/leveldb"],
+                 darwin=["{HOME}/Library/Application Support/discord*/Local Storage/leveldb"],
+                 linux=["{HOME}/.config/discord*/Local Storage/leveldb"]),
+              "auth tokens in leveldb (stable/canary/ptb)", glob=True),
+    StoreSpec("slack-tokens", "Slack", "token",
+              _p(win=["{APPDATA}/Slack/Local Storage/leveldb"],
+                 darwin=["{HOME}/Library/Application Support/Slack/Local Storage/leveldb"],
+                 linux=["{HOME}/.config/Slack/Local Storage/leveldb"]),
+              "xoxc tokens + xoxd cookies in leveldb"),
+    StoreSpec("telegram-tdata", "Telegram", "token",
+              _p(win=["{APPDATA}/Telegram Desktop/tdata"],
+                 darwin=["{HOME}/Library/Application Support/Telegram Desktop/tdata"],
+                 linux=["{HOME}/.local/share/TelegramDesktop/tdata"]),
+              "session keys — full account takeover"),
+    StoreSpec("signal-keys", "Signal", "key",
+              _p(win=["{APPDATA}/Signal/config.json"],
+                 darwin=["{HOME}/Library/Application Support/Signal/config.json"],
+                 linux=["{HOME}/.config/Signal/config.json"]),
+              "sqlcipher db decryption key"),
+
+    # --- Password managers ---------------------------------------------------
+    StoreSpec("bitwarden", "Bitwarden", "key",
+              _p(win=["{APPDATA}/Bitwarden"],
+                 darwin=["{HOME}/Library/Application Support/Bitwarden"],
+                 linux=["{HOME}/.config/Bitwarden"]),
+              "encrypted vault (data.json) — stolen for offline crack"),
+    StoreSpec("1password", "1Password", "key",
+              _p(win=["{LOCALAPPDATA}/1Password", "{APPDATA}/1Password"],
+                 darwin=["{HOME}/Library/Group Containers/2BUA8C4S2C.com.1password"],
+                 linux=["{HOME}/.config/1Password"]),
+              "vault blobs + session material"),
+
+    # --- Crypto wallets -------------------------------------------------------
+    StoreSpec("exodus-wallet", "Exodus", "key",
+              _p(win=["{APPDATA}/Exodus"],
+                 darwin=["{HOME}/Library/Application Support/Exodus"],
+                 linux=["{HOME}/.config/Exodus"]),
+              "exodus.wallet seed vault"),
+    StoreSpec("electrum-wallet", "Electrum", "key",
+              _p(win=["{APPDATA}/Electrum"],
+                 posix=["{HOME}/.electrum"]),
+              "wallets + seed"),
+    StoreSpec("bitcoin-wallet", "Bitcoin Core", "key",
+              _p(win=["{APPDATA}/Bitcoin"],
+                 darwin=["{HOME}/Library/Application Support/Bitcoin"],
+                 linux=["{HOME}/.bitcoin"]),
+              "wallet.dat"),
+    StoreSpec("ethereum-keystore", "Ethereum", "key",
+              _p(win=["{APPDATA}/Ethereum/keystore"],
+                 linux=["{HOME}/.ethereum/keystore"]),
+              "UTC/JSON keystores"),
+    StoreSpec("solana-keypair", "Solana", "key",
+              _p(posix=["{HOME}/.config/solana/id.json"]),
+              "plaintext byte-array keypair"),
+
+    # --- File transfer / remote access (plaintext cred stores) ----------------
+    StoreSpec("filezilla", "FileZilla", "token",
+              _p(win=["{APPDATA}/FileZilla"],
+                 posix=["{HOME}/.config/filezilla", "{HOME}/.filezilla"]),
+              "sitemanager.xml / recentservers.xml — plaintext passwords",
+              scan=("sitemanager.xml", "recentservers.xml")),
+    StoreSpec("winscp", "WinSCP", "token",
+              _p(win=["{APPDATA}/WinSCP.ini"]),
+              "stored session passwords (obfuscated)"),
+    StoreSpec("mremote", "mRemoteNG", "token",
+              _p(win=["{APPDATA}/mRemoteNG"]),
+              "confCons.xml connection credentials"),
+    StoreSpec("openvpn", "OpenVPN", "token",
+              _p(win=["{HOME}/OpenVPN/config"],
+                 posix=["{HOME}/.config/openvpn"]),
+              "profiles with embedded auth"),
+    StoreSpec("anydesk", "AnyDesk", "token",
+              _p(win=["{APPDATA}/AnyDesk"],
+                 posix=["{HOME}/.anydesk"]),
+              "service.conf, connection auth tokens"),
+    StoreSpec("teamviewer", "TeamViewer", "token",
+              _p(win=["{APPDATA}/TeamViewer"],
+                 posix=["{HOME}/.config/teamviewer"]),
+              "connection IDs + auth"),
+
+    # --- Misc plaintext-cred files stealers glob for ---------------------------
+    StoreSpec("nuget", "NuGet", "token",
+              _p(win=["{APPDATA}/NuGet/NuGet.Config"],
+                 posix=["{HOME}/.nuget/NuGet/NuGet.Config",
+                        "{HOME}/.config/NuGet/NuGet.Config"]),
+              "plaintext package-source apikeys"),
+    StoreSpec("pgpass", "PostgreSQL", "token",
+              _p(win=["{APPDATA}/postgresql/pgpass.conf"],
+                 posix=["{HOME}/.pgpass"]),
+              "plaintext db passwords"),
+    StoreSpec("mysql-cnf", "MySQL", "token",
+              _p(posix=["{HOME}/.my.cnf"]),
+              "plaintext db passwords"),
+    StoreSpec("s3cmd", "s3cmd", "token",
+              _p(posix=["{HOME}/.s3cfg"]),
+              "access_key/secret_key plaintext"),
+    StoreSpec("boto", "gsutil/boto", "token",
+              _p(posix=["{HOME}/.boto"]),
+              "aws_secret_access_key plaintext"),
+    StoreSpec("rclone", "rclone", "token",
+              _p(win=["{APPDATA}/rclone/rclone.conf"],
+                 posix=["{HOME}/.config/rclone/rclone.conf"]),
+              "cloud storage creds (obscured, reversible)"),
+    StoreSpec("doctl", "DigitalOcean", "token",
+              _p(posix=["{HOME}/.config/doctl/config.yaml"]),
+              "access-token dop_v1_ plaintext"),
+    StoreSpec("ngrok", "ngrok", "token",
+              _p(win=["{HOME}/.ngrok2/ngrok.yml", "{LOCALAPPDATA}/ngrok"],
+                 posix=["{HOME}/.ngrok2/ngrok.yml",
+                        "{HOME}/.config/ngrok/ngrok.yml"]),
+              "authtoken plaintext"),
+    StoreSpec("svn-auth", "Subversion", "token",
+              _p(win=["{APPDATA}/Subversion/auth"],
+                 posix=["{HOME}/.subversion/auth"]),
+              "cached realm credentials"),
+    StoreSpec("steam-session", "Steam", "token",
+              _p(win=["{PF86}/Steam/config", "{PF86}/Steam/ssfn*"],
+                 darwin=["{HOME}/Library/Application Support/Steam/config"],
+                 linux=["{HOME}/.steam/steam/config",
+                        "{HOME}/.local/share/Steam/config"]),
+              "ssfn auth files + loginusers config", glob=True),
+    StoreSpec("jetbrains-creds", "JetBrains", "key",
+              _p(win=["{APPDATA}/JetBrains/*/c.kdbx"],
+                 darwin=["{HOME}/Library/Application Support/JetBrains/*/c.kdbx"],
+                 linux=["{HOME}/.config/JetBrains/*/c.kdbx"]),
+              "IDE credential KeePass db", glob=True),
+    StoreSpec("postman", "Postman", "token",
+              _p(win=["{APPDATA}/Postman/Local Storage/leveldb",
+                      "{APPDATA}/Postman/IndexedDB"],
+                 darwin=["{HOME}/Library/Application Support/Postman/Local Storage/leveldb"],
+                 linux=["{HOME}/.config/Postman/Local Storage/leveldb"]),
+              "API tokens in leveldb/IndexedDB"),
+    StoreSpec("insomnia", "Insomnia", "token",
+              _p(win=["{APPDATA}/Insomnia/Local Storage/leveldb"],
+                 darwin=["{HOME}/Library/Application Support/Insomnia/Local Storage/leveldb"],
+                 linux=["{HOME}/.config/Insomnia/Local Storage/leveldb"]),
+              "API tokens in leveldb"),
 ]
 
 
@@ -245,9 +528,12 @@ def discover(env=None, platform=None):
         for raw in _paths_for(spec, platform):
             p = platforms.expand(raw, env=env, platform=platform)
             if spec.glob:
-                for hit in sorted(p.parent.glob(p.name)):
-                    if hit.exists():
-                        out.append(_res(spec, hit))
+                # glob.glob handles '*' in ANY segment (profile dirs);
+                # Path.parent.glob only works on the final component
+                for hit in sorted(_glob.glob(str(p))):
+                    hp = Path(hit)
+                    if hp.exists():
+                        out.append(_res(spec, hp))
                 continue
             if p.exists():
                 out.append(_res(spec, p))
@@ -268,7 +554,7 @@ def known_specs_for(platform=None):
     rows = []
     for spec in STORES:
         for raw in _paths_for(spec, platform):
-            rows.append((spec, platforms.expand(raw)))
+            rows.append((spec, platforms.expand(raw, platform=platform)))
     return rows
 
 
@@ -309,7 +595,11 @@ _SCAN_ANYWAY = {"codex-dir", "claude-code-config", "mcp-cursor",
                 "npm", "yarn", "pypi", "terraform", "cargo", "gem",
                 "composer", "maven", "gradle", "configstore", "vercel",
                 "netlify", "railway", "cursor-app", "claude-desktop",
-                "vscode-global", "copilot-config"}
+                "vscode-global", "copilot-config",
+                "opencode", "goose", "amp", "factory", "qwen-code", "kiro",
+                "discord-tokens", "slack-tokens", "filezilla", "winscp",
+                "mremote", "pgpass", "mysql-cnf", "s3cmd", "boto", "rclone",
+                "doctl", "ngrok", "nuget", "postman", "insomnia"}
 
 
 def sensitive_paths(resolved_list):

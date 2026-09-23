@@ -88,6 +88,34 @@ rathat_shield's ADB layer) so the whole control plane is unit-testable.
 - [x] 4663 XML parse + allowlist + dedupe proven on fixture (stealer.exe
       alerts, MsMpEng allowlisted, WRITE_DAC->perm-change)
 
+## Hardening round 4 — stealer-surface expansion
+Gap found via 2026 threat-landscape review: tokenwatch covered agent/dev
+stores but NOT the classic infostealer targets — browser cookie/cred
+stores (the #1 stealer objective: Cookies + Local State = MFA-immune
+session replay), DPAPI master keys, messaging tokens, wallets.
+- [x] ~30 new StoreSpecs: Chrome/Edge/Brave/Chromium/Opera/Firefox/
+      Thunderbird file-level cred stores, MetaMask/Phantom ext leveldb,
+      Windows Protect/Credentials/Vault, Discord/Slack leveldb, Telegram
+      tdata, Signal config.json, Bitwarden/1Password, Exodus/Electrum/
+      Bitcoin/Ethereum/Solana, FileZilla/WinSCP/mRemoteNG/OpenVPN/AnyDesk/
+      TeamViewer/Steam, NuGet/pgpass/.my.cnf/.s3cfg/.boto/rclone/doctl/
+      ngrok/svn, JetBrains c.kdbx, Postman/Insomnia, plus OpenCode/Goose/
+      Amp/Factory/Qwen/Kiro agent stores
+- [x] discover() glob upgraded parent.glob -> glob.glob (multi-segment
+      patterns: User Data/*/Login Data resolves all profiles)
+- [x] platforms.expand: {PF86}/{PF} tokens (Steam under Program Files)
+- [x] DEFAULT_ALLOW: browsers (install-dir + signer + own-path scoped),
+      messaging/wallet/tools dir-anchored, lsass/svchost (system32 +
+      Microsoft sig) for DPAPI/CredMan/Vault, JetBrains proc-dir scoped
+- [x] secrets: discord-token (mfa. + 24.6.27-part), filezilla-pass
+      (<Pass> plaintext), slack xoxd/xoxc/xapp, generic bare `pass =`;
+      _STEMS prefilter extended (missed stems silently skipped new
+      patterns — caught by tests)
+- [x] honey: passwords.txt / seed_phrase.txt / wallet.dat.bak strays
+- [x] known_specs_for() now honors its platform arg (was ignored)
+- [x] 89 tests green; live audit on host resolves Edge profile creds +
+      cred infra, verdict HARDENED (score 10 stored-session)
+
 ## Review
 Built 2026-09-23. Gap it fills: Muse-class theft of agent token stores +
 cached context — uncovered by gitguard/phantom-snare/iron-gates-xdr.
