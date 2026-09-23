@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import platforms
+from . import procwatch
 
 AUDIT_SUBCATEGORY_GUID = "{0CCE921D-69AE-11D9-BED3-505054503030}"  # File System
 _EVENT_NS = "{http://schemas.microsoft.com/win/2004/08/events/event}"
@@ -155,9 +156,11 @@ class AccessEvent:
     path: str
     process: str        # exe path or "?" (degraded backend)
     pid: int
-    access: str         # "read" | "write" | "delete" | "perm-change" | ...
+    access: str         # "read" | "write" | "delete" | "perm-change" |
+                        # "sacl-reapply" | "debug-launch" | ...
     user: str = ""
     honey: bool = False
+    detail: str = ""    # flag + parent info for debug-launch, etc.
 
     def to_jsonl(self):
         return json.dumps(self.__dict__, separators=(",", ":"))
@@ -280,6 +283,37 @@ class WindowsEventBackend:
             timeout=60, runner=self.runner)
         return f"sacl {'add' if add else 'del'} {path}: rc={rc} {err.strip()}"
 
+    # FileSystemRights bit values we set — the Everyone+Success+
+    # ChangePermissions+TakeOwnership combo is distinctive enough to serve
+    # as the "our rule" marker
+    _VERIFY_PS = (
+        "$paths=@(%s);"
+        "foreach($p in $paths){try{$hit=$false;"
+        "foreach($r in (Get-Acl -LiteralPath $p -Audit).Audit){"
+        "if($r.IdentityReference -match 'Everyone' -and $r.AuditFlags "
+        "-match 'Success' -and ($r.FileSystemRights -band 262144) -and "
+        "($r.FileSystemRights -band 524288)){$hit=$true}};"
+        "if(-not $hit){'MISSING: '+$p}}catch{'MISSING: '+$p}}")
+
+    def verify(self):
+        """Paths whose tokenwatch SACL is gone — atomic file replacement
+        (browser write-temp-then-rename) drops it silently. Only checked
+        when installed: a bare `watch --once` must not mutate ACLs."""
+        if not self.installed or not self.roots:
+            return []
+        listed = ", ".join("'" + r.replace("'", "''") + "'"
+                           for r in self.roots)
+        rc, out, _ = platforms.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             self._VERIFY_PS % listed], timeout=120, runner=self.runner)
+        if rc != 0:
+            return []
+        return [ln[len("MISSING: "):] for ln in out.splitlines()
+                if ln.startswith("MISSING: ")]
+
+    def reapply(self, path):
+        return self._sacl(path, add=True)
+
     def poll(self):
         """Fetch new 4663 events touching protected roots.
 
@@ -367,6 +401,7 @@ class LinuxAuditBackend:
     def __init__(self, roots, env=None, runner=None):
         self.roots = [str(r) for r in roots]
         self.runner = runner
+        self.installed = False
 
     def install(self):
         out = []
@@ -375,6 +410,7 @@ class LinuxAuditBackend:
                 ["auditctl", "-w", r, "-k", "tokenwatch", "-p", "rwa"],
                 runner=self.runner)
             out.append(f"auditctl {r}: rc={rc} {err.strip()}")
+        self.installed = True
         return out
 
     def uninstall(self):
@@ -384,6 +420,7 @@ class LinuxAuditBackend:
                 ["auditctl", "-W", r, "-k", "tokenwatch", "-p", "rwa"],
                 runner=self.runner)
             out.append(f"auditctl -W {r}: rc={rc}")
+        self.installed = False
         return out
 
     def poll(self):
@@ -393,6 +430,22 @@ class LinuxAuditBackend:
         if rc != 0 or not out.strip():
             return []
         return self._parse(out)
+
+    def verify(self):
+        """auditctl -w watches bind to the inode — an atomically replaced
+        file silently drops the watch, same as the Windows SACL case."""
+        if not self.installed:
+            return []
+        rc, out, _ = platforms.run(["auditctl", "-l"], runner=self.runner)
+        if rc != 0:
+            return []
+        return [r for r in self.roots if r not in out]
+
+    def reapply(self, path):
+        rc, _, err = platforms.run(
+            ["auditctl", "-w", path, "-k", "tokenwatch", "-p", "rwa"],
+            runner=self.runner)
+        return f"auditctl -w {path}: rc={rc} {err.strip()}"
 
     @staticmethod
     def _parse(text):
@@ -438,6 +491,12 @@ class SnapshotBackend:
     def uninstall(self):
         self.snap = {}
         return ["snapshot state cleared"]
+
+    def verify(self):
+        return []   # no kernel watches to drift — snapshot re-takes anyway
+
+    def reapply(self, path):
+        return ""
 
     def _take(self):
         for root in self.roots:
@@ -489,10 +548,15 @@ def pick_backend(platform, roots, env=None, runner=None):
 
 
 class Watcher:
-    """Install backends, poll, allowlist-filter, append alerts.jsonl."""
+    """Install backends, poll, allowlist-filter, append alerts.jsonl.
+
+    housekeeping_secs gates the non-poll checks: SACL/watch drift repair
+    (atomic file replacement silently drops the audit rule) and browser
+    debug-port launch inspection (ABE-era cookie theft rides through the
+    real signed browser binary, invisible to file watch)."""
 
     def __init__(self, paths, honey_paths=(), env=None, runner=None,
-                 platform=None, state_dir=None):
+                 platform=None, state_dir=None, housekeeping_secs=60):
         self.platform = platform or platforms.PLATFORM
         self.env = env if env is not None else os.environ
         self.state = state_dir or platforms.state_dir(self.env)
@@ -504,12 +568,48 @@ class Watcher:
         self.allowlist = Allowlist(self.state, runner=runner,
                                    platform=self.platform)
         self.alert_log = self.state / "alerts.jsonl"
+        self.hk_secs = housekeeping_secs
+        self._last_hk = 0.0
+        self._seen_pids = set()
 
     def install(self):
         return self.backend.install()
 
     def uninstall(self):
         return self.backend.uninstall()
+
+    def _housekeeping(self, alerts):
+        """Self-generated signals appended straight to alerts (no
+        allowlist pass — these events are ours by construction)."""
+        if time.time() - self._last_hk < self.hk_secs:
+            return
+        self._last_hk = time.time()
+
+        # 1. drift: reapply silently-dropped audit rules; the reapply
+        #    event itself is the second tamper signal (alongside
+        #    WRITE_DAC) — a SACL that keeps disappearing is an attacker
+        #    or a program atomically rewriting the store
+        verify = getattr(self.backend, "verify", None)
+        if verify:
+            for p in verify():
+                act = self.backend.reapply(p)
+                alerts.append(AccessEvent(
+                    time.time(), str(p), "tokenwatch", os.getpid(),
+                    "sacl-reapply", detail=str(act)))
+
+        # 2. browser launched with debugging/headless flags by a
+        #    non-shell, non-devtool parent — DevTools cookie extraction
+        for s in procwatch.scan(runner=self.runner, platform=self.platform):
+            if s["pid"] in self._seen_pids:
+                continue
+            if len(self._seen_pids) > 4096:
+                self._seen_pids.clear()
+            self._seen_pids.add(s["pid"])
+            alerts.append(AccessEvent(
+                time.time(), s["cmdline"][:200],
+                s.get("exe") or s["name"], s["pid"], "debug-launch",
+                detail=f"flag={s['flag']} "
+                       f"parent={s.get('parent', '?')}({s['ppid']})"))
 
     def poll_once(self):
         """One poll cycle -> list of NON-allowlisted events (alerts)."""
@@ -520,6 +620,7 @@ class Watcher:
             if self.allowlist.allows(ev):
                 continue
             alerts.append(ev)
+        self._housekeeping(alerts)
         if alerts:
             with self.alert_log.open("a", encoding="utf-8") as fh:
                 for ev in alerts:

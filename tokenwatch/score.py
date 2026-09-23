@@ -40,10 +40,16 @@ RULE_WEIGHTS = {
     "unauthorized-write":  60,
     "perm-change":         70,
     "honeytoken-read":    100,
+    # housekeeping signals
+    "sacl-reapply":        10,   # audit rule vanished — atomic rewrite or
+                               # tamper; a signal, not proof of theft
+    "debug-launch":        80,   # browser w/ debug-port+headless spawned
+                               # by a non-shell parent (DevTools cookie
+                               # extraction — ABE-era stealer playbook)
 }
 
 FORCE_COMPROMISED = {"honeytoken-read", "unauthorized-read",
-                     "perm-change", "unauthorized-write"}
+                     "perm-change", "unauthorized-write", "debug-launch"}
 
 # per-rule caps so one noisy rule can't dominate
 RULE_CAPS = {"plaintext-token": 60, "context-secret": 70,

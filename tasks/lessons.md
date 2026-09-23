@@ -59,6 +59,27 @@ fixture hid this: fixtures must match the real tool's output ordering.
 Two live-run lessons in a row — synthetic tests verify logic, never
 the platform's actual behavior.
 
+## SACLs/watch rules die on atomic file replacement
+`FileSystemAuditRule` binds to the file; Chromium writes prefs via
+temp+rename, so the SACL vanishes on first browser write — silently, no
+error. Any watch design needs a verify-and-reapply pass on a cadence, and
+the reapply event is itself a tamper signal. Same for `auditctl -w`
+(inode-bound). A live test right after install passes while coverage is
+already broken — verify durability, not just install.
+
+## File watch alone can't see ABE-era cookie theft
+Post-App-Bound-Encryption stealers relaunch the browser with
+--remote-debugging-port/--headless and read cookies over DevTools — the
+reader is the REAL signed chrome.exe, allowlist-clean. Need process
+command-line inspection (Win32_Process/ps) + parent classification.
+Parents that exit instantly (wscript .Run) resolve as "?" — treat
+unknown/orphaned parents as suspicious, not benign.
+
+## In-process "foreign" reads are allowlisted by self_pid
+The live script read Local State from the watcher's own python process —
+self_pid check correctly skipped it. Foreign-actor proofs must spawn a
+child process.
+
 ## A stale pip install shadows the repo
 `pip show tokenwatch` revealed 0.1.0 installed in site-packages — tests run
 from `tests/` imported the OLD package (plant() without runner kwarg).

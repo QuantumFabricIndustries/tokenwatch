@@ -117,7 +117,22 @@ zero-false-positive compromise.
 
 **watch** — Windows polls Security 4663 by `EventRecordID > N` watermark
 (after a one-time 60s seed window), so events that flush late can never be
-dropped.
+dropped. On a housekeeping cadence (default 60s) it also:
+
+- **reapplies dropped SACLs** — browsers write `Local State`/`Login Data`
+  via temp-file + atomic rename, which silently discards the audit rule.
+  Each housekeeping pass verifies every watched path still carries the
+  SACL and reinstalls it, logging a `sacl-reapply` event — the
+  disappearing-SACL pattern is itself a second tamper signal alongside
+  `WRITE_DAC`.
+- **flags debug-port browser launches** — since App-Bound Encryption,
+  stealers relaunch the browser with `--remote-debugging-port` /
+  `--remote-debugging-pipe` / `--headless` and pull decrypted cookies over
+  DevTools; the file reader is the real signed browser, invisible to file
+  watch. `procwatch` scans command lines (Win32_Process / `ps`) and alerts
+  `debug-launch` (score 80, forces COMPROMISED) when the parent isn't a
+  user shell or known dev tool — script hosts, services, and dead/orphaned
+  parents all flag.
 
 **channel integrity** (part of `audit`) — the redirection half of the Muse
 attack: env + WinINET/WinHTTP proxies that could reroute agent traffic,
@@ -157,7 +172,14 @@ Per-rule caps keep one noisy rule from dominating; the SUMMARY block prints
   detecting replay needs cloud sign-in telemetry, which is out of scope.
 - Chrome's App-Bound Encryption means cookie *decryption* must run inside
   Chrome's own process; file theft still happens (attackers copy `Cookies` +
-  `Local State` and inject/elevate later) — that's the access this detects.
+  `Local State` and inject/elevate later) — that's the access this detects,
+  plus `procwatch` for the DevTools-extraction variant.
+- `debug-launch` needs command-line visibility: on Windows that's same-user
+  `Win32_Process` reads (no admin needed); a process that exits before the
+  housekeeping scan isn't seen.
+- Drift repair only runs while `watch` is installed/running — a SACL dropped
+  between runs is restored at the first poll of the next run, not during
+  downtime.
 
 ## Tests
 

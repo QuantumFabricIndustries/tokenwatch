@@ -263,6 +263,18 @@ def cmd_honey(a):
     return 0
 
 
+def _alert_rule(ev):
+    """Map a logged watch event to a scoring rule."""
+    if ev.get("honey"):
+        return "honeytoken-read"
+    access = ev.get("access")
+    if access in ("write", "delete"):
+        return "unauthorized-write"
+    if access in ("perm-change", "sacl-reapply", "debug-launch"):
+        return access
+    return "unauthorized-read"
+
+
 def cmd_report(a):
     env = dict(os.environ)
     rep = _run_audit(env)
@@ -274,12 +286,11 @@ def cmd_report(a):
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            rule = "honeytoken-read" if ev.get("honey") else \
-                ("unauthorized-write" if ev.get("access") in
-                 ("write", "delete") else "unauthorized-read")
-            rep.findings.append(Finding(
-                rule, ev.get("path", "?"),
-                f"{ev.get('process', '?')} (pid {ev.get('pid', 0)})"))
+            detail = f"{ev.get('process', '?')} (pid {ev.get('pid', 0)})"
+            if ev.get("detail"):
+                detail += f" - {ev['detail']}"
+            rep.findings.append(Finding(_alert_rule(ev),
+                                        ev.get("path", "?"), detail))
     rep.finalize()
     _emit(rep, a.json, a.out)
     return 1 if rep.score >= 50 else 0

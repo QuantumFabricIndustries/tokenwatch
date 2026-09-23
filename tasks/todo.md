@@ -116,6 +116,35 @@ session replay), DPAPI master keys, messaging tokens, wallets.
 - [x] 89 tests green; live audit on host resolves Edge profile creds +
       cred infra, verdict HARDENED (score 10 stored-session)
 
+## Hardening round 5 — drift repair + ABE-era launch detection
+User review caught two design bugs where a passing live test would hide
+broken real coverage:
+- [x] SACL drift repair: browsers write Local State/Login Data via
+      temp+atomic rename — new file inherits parent ACL, SACL silently
+      gone. WindowsEventBackend.verify() checks every root for the
+      Everyone/Success/ChangePermissions+TakeOwnership rule each
+      housekeeping pass (default 60s); missing -> reapply + sacl-reapply
+      alert (second tamper signal vs WRITE_DAC). LinuxAuditBackend.verify
+      does the same via `auditctl -l` (inode-bound watches die the same
+      way). Gated on installed — `watch --once` never mutates ACLs.
+- [x] procwatch.py: ABE-era playbook — stealer relaunches browser with
+      --remote-debugging-port/--remote-debugging-pipe/--headless, reads
+      cookies over DevTools as the REAL signed browser (file watch blind).
+      Win32_Process / `ps` cmdline scan, flagged when parent isn't a
+      shell/devtool (wscript/rundll32/svchost/orphaned parents all flag).
+      debug-launch=80, forces COMPROMISED.
+- [x] report mapping: perm-change was mis-mapped to unauthorized-read;
+      _alert_rule() extracted + fixed; sacl-reapply/debug-launch mapped.
+- [x] LIVE PROOF (elevated, scoped): SACLs on Edge Login Data + Local
+      State + Microsoft\Protect (Cookies skipped — write volume). Forced
+      atomic replace on real Local State -> verify caught missing SACL ->
+      reapplied, sacl-reapply event logged. Foreign powershell read of
+      Login Data -> alert w/ pid attribution. Uninstall clean, no leftovers.
+- [x] procwatch live (unelevated): wscript-spawned headless edge w/
+      --remote-debugging-port flagged (parent=? — wscript exits instantly;
+      unknown parent fails closed, correct)
+- [x] 99 tests green
+
 ## Review
 Built 2026-09-23. Gap it fills: Muse-class theft of agent token stores +
 cached context — uncovered by gitguard/phantom-snare/iron-gates-xdr.
