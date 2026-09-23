@@ -2,9 +2,8 @@
 import json
 import platform
 import time
-from collections import Counter
 
-from .score import score as _score
+from .score import score_detail
 
 
 class Report:
@@ -17,9 +16,12 @@ class Report:
         self.ts = time.time()
         self.score = 0
         self.verdict = "HARDENED"
+        self.detail = None          # ScoreResult — per-rule cap breakdown
 
     def finalize(self):
-        self.score, self.verdict = _score(self.findings)
+        self.detail = score_detail(self.findings)
+        self.score = self.detail.total
+        self.verdict = self.detail.verdict
         return self
 
     def to_json(self):
@@ -32,6 +34,7 @@ class Report:
                           for o, k, p in self.inventory],
             "honey": [{"id": i, "path": p, "status": s}
                       for i, p, s in self.honey],
+            "rules": self.detail.rules if self.detail else {},
             "findings": [{"rule": f.rule, "path": str(f.path),
                           "detail": f.detail, "points": f.points}
                          for f in self.findings]}, indent=2)
@@ -62,8 +65,12 @@ class Report:
                            + (f" - {f.detail}" if f.detail else ""))
         else:
             out.append("no findings - credential surface is clean")
-        counts = Counter(f.rule for f in self.findings)
-        if counts:
-            out += ["", "== SUMMARY =="] + [
-                f"  {rule}: {n}" for rule, n in counts.most_common()]
+        if self.detail and self.detail.rules:
+            out += ["", "== SUMMARY =="]
+            for rule, r in sorted(self.detail.rules.items(),
+                                  key=lambda kv: -kv[1]["raw"]):
+                line = (f"  {rule}: {r['count']} hits, raw {r['raw']}")
+                if r["effective"] != r["raw"]:
+                    line += f" -> {r['effective']} (cap)"
+                out.append(line)
         return "\n".join(out)

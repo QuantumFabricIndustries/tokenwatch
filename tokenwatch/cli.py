@@ -53,25 +53,18 @@ def _run_audit(env, runner=None, extra_dirs=(), fix=False):
                 if act:
                     print(f"  [fix] {act}", file=sys.stderr)
 
-    # 2. secret scan — context leaks score higher than at-rest plaintext
+    # 2. secret scan — classified by where the secret sits:
+    #    expected credential storage (stored-session) vs actual leaks
     seen = set()
     for f in inventory.context_files(resolved):
-        spec_kind = next((r.spec.kind for r in resolved
-                          if str(r.path) in str(f) or r.path == f
-                          or r.path == f.parent), "context")
+        kind = _spec_kind(f, resolved)
         for hit in secrets.scan_file(f):
-            key = (str(hit.path), hit.line, hit.masked)   # same secret,
-            if key in seen:                               # any pattern, once
+            key = (str(hit.path), hit.fp)   # same VALUE in one file = once
+            if key in seen:
                 continue
             seen.add(key)
-            if _in_mcp_config(f):
-                rule = "mcp-plaintext-key"
-            elif spec_kind == "context" or _is_context_file(f, resolved):
-                rule = "context-secret"
-            else:
-                rule = "plaintext-token"
             rep.findings.append(Finding(
-                rule, str(hit.path),
+                _hit_rule(Path(f), kind), str(hit.path),
                 f"{hit.pattern} line {hit.line or '-'} {hit.masked}"))
 
     # 3. env exposure
@@ -90,16 +83,54 @@ def _run_audit(env, runner=None, extra_dirs=(), fix=False):
     return rep.finalize()
 
 
-def _in_mcp_config(path):
-    name = Path(path).name.lower()
-    return name in ("mcp.json", "mcp_config.json",
-                    "claude_desktop_config.json")
+_MCP_NAMES = {"mcp.json", ".mcp.json", "mcp_config.json",
+              "claude_desktop_config.json", ".claude.json"}
+
+# files whose PURPOSE is holding credentials — secrets inside are expected
+# storage (stored-session), not leaks
+_EXPECTED_CRED_NAMES = {
+    ".credentials.json", "credentials", "credentials.json",
+    "credentials.toml", "credentials.tfrc.json", "auth.json",
+    "oauth_creds.json", "hosts.yml", "access_tokens.db", "credentials.db",
+    "msal_token_cache.bin", "msal_token_cache.json", "state.vscdb",
+    ".netrc", "_netrc", ".git-credentials", ".npmrc", ".yarnrc",
+    ".pypirc", "token", "google_accounts.json", "apps.json",
+    "config.json", ".env", ".envrc", "settings.xml",
+    "gradle.properties", "nuget.config",
+}
+_KEY_PREFIXES = ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa")
+
+# subdirs that hold transcripts/history rather than credential files
+_CONTEXTISH = {"sessions", "projects", "history", "logs", "log",
+               "cascade", "transcripts", "memories", "chats"}
 
 
-def _is_context_file(path, resolved):
-    s = str(path)
-    return any(r.spec.kind == "context" and str(r.path) in s
-               for r in resolved)
+def _spec_kind(path, resolved):
+    """Kind of the most-specific resolved spec containing `path`."""
+    best = None
+    for r in resolved:
+        try:
+            if path == r.path or r.path in path.parents:
+                if best is None or len(str(r.path)) > len(str(best.path)):
+                    best = r
+        except TypeError:
+            continue
+    return best.spec.kind if best else "context"
+
+
+def _hit_rule(path, spec_kind):
+    name = path.name.lower()
+    if name in _MCP_NAMES:
+        return "mcp-plaintext-key"
+    if any(part.lower() in _CONTEXTISH for part in path.parts):
+        return "context-secret"
+    if name in _EXPECTED_CRED_NAMES or name.startswith(_KEY_PREFIXES):
+        return "stored-session"
+    if spec_kind == "context":
+        return "context-secret"
+    if spec_kind in ("token", "key"):
+        return "stored-session"      # inside a credential store = expected
+    return "plaintext-token"
 
 
 def cmd_audit(a):

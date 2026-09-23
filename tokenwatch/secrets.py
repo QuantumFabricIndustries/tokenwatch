@@ -58,6 +58,29 @@ PLACEHOLDER_RE = re.compile(
     r"|example|sample|test|placeholder|dummy|none|null|todo|redacted"
     r"|insert|replace|foo|bar|xxx|zzz|0+|1+|a+|password)$")
 
+# documented example / placeholder VALUES — excluded from provider hits too.
+# (the canonical AWS docs pair AKIAIOSFODNN7EXAMPLE / wJalrXU...EXAMPLEKEY
+# shows up inside sqlite blobs and configs everywhere)
+KNOWN_EXAMPLES = {
+    "akiaiosfodnn7example",
+    "wjalrxutnfemi/k7mdeng/bpxrficyexamplekey",
+}
+_DOC_EXAMPLE_RE = re.compile(
+    r"(?i)(example|exampl3|placeholder|notreal|not_a_real|changeme|"
+    r"change[_-]?me|your[_-]?(api|key|token|secret)|insert[_-]?(key|token)"
+    r"|replace[_-]?(this|me|key)|dummy[_-]?(key|token)?|x{5,})")
+_SEQ_RE = re.compile(
+    r"(?i)(012345|123456|234567|345678|456789|abcdef|bcdefg|cdefgh|defghi"
+    r"|qwerty|asdfgh)")
+
+
+def _is_example(val):
+    """True for doc-example/placeholder/sequential values, not real secrets."""
+    v = val.strip().strip("'\"").lower()
+    if not v or v in KNOWN_EXAMPLES:
+        return True
+    return bool(_DOC_EXAMPLE_RE.search(v) or _SEQ_RE.search(v))
+
 ENTROPY_MIN = 3.4               # bits/char for generic candidates
 
 
@@ -66,8 +89,9 @@ class SecretHit:
     pattern: str
     path: Path
     line: int          # 0 for binary/blob hits
-    masked: str        # "ghp_…9f2c" — safe to display
+    masked: str        # "ghp_...9f2c" — safe to display
     generic: bool = False
+    fp: str = ""       # sha256[:16] of raw value — dedupe key, never shown
 
 
 def mask(value):
@@ -99,18 +123,25 @@ def _generic_ok(value):
 def scan_text(text, path):
     if not _STEMS.search(text):
         return []
+    import hashlib
     hits = []
     for name, rx in PROVIDER_PATTERNS:
         for m in rx.finditer(text):
             val = m.group(1) if m.lastindex else m.group(0)
+            if _is_example(val):
+                continue
             line = text.count("\n", 0, m.start()) + 1
-            hits.append(SecretHit(name, Path(path), line, mask(val)))
+            hits.append(SecretHit(name, Path(path), line, mask(val),
+                                  fp=hashlib.sha256(
+                                      val.encode()).hexdigest()[:16]))
     for m in GENERIC_RE.finditer(text):
         val = m.group(2)
-        if _generic_ok(val):
+        if _generic_ok(val) and not _is_example(val):
             line = text.count("\n", 0, m.start()) + 1
             hits.append(SecretHit(f"generic:{m.group(1).lower()}", Path(path),
-                                  line, mask(val), generic=True))
+                                  line, mask(val), generic=True,
+                                  fp=hashlib.sha256(
+                                      val.encode()).hexdigest()[:16]))
     return hits
 
 
@@ -148,9 +179,14 @@ def scan_blob(data, path):
         return []
     if not _STEMS.search(text):
         return []
+    import hashlib
     hits = []
     for name, rx in PROVIDER_PATTERNS:
         for m in rx.finditer(text):
             val = m.group(1) if m.lastindex else m.group(0)
-            hits.append(SecretHit(name, Path(path), 0, mask(val)))
+            if _is_example(val):
+                continue
+            hits.append(SecretHit(name, Path(path), 0, mask(val),
+                                  fp=hashlib.sha256(
+                                      val.encode()).hexdigest()[:16]))
     return hits

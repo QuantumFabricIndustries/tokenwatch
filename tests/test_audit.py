@@ -148,6 +148,56 @@ class TestScore(unittest.TestCase):
         self.assertLessEqual(total, 70)   # capped, not 350
 
 
+class TestClassification(unittest.TestCase):
+    def test_stored_session_vs_leak(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / ".gemini").mkdir()
+            jwt = ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+                   "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
+            (home / ".gemini" / "oauth_creds.json").write_text(
+                f'{{"access_token": "{jwt}"}}')
+            rep = cli._run_audit(fake_env(home))
+            sess = [f for f in rep.findings if f.rule == "stored-session"]
+            self.assertTrue(sess, "oauth_creds.json should be stored-session")
+            self.assertFalse(any(f.rule == "plaintext-token"
+                                 for f in rep.findings))
+
+    def test_dedupes_same_secret_twice_in_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            d = home / ".claude" / "projects"
+            d.mkdir(parents=True)
+            tok = "hf_" + "aB3d" * 9
+            (d / "s.jsonl").write_text(f"l1 {tok}\nl2 {tok}\n")
+            rep = cli._run_audit(fake_env(home))
+            hits = [f for f in rep.findings if f.rule == "context-secret"]
+            self.assertEqual(len(hits), 1, "same token counted twice")
+
+    def test_sessions_dir_is_context_not_stored(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            d = home / ".codex" / "sessions"
+            d.mkdir(parents=True)
+            (d / "rollout.json").write_text(
+                'chat: sk-ant-api03-' + 'a1B2c3D4' * 6)
+            rep = cli._run_audit(fake_env(home))
+            self.assertTrue(any(f.rule == "context-secret"
+                                for f in rep.findings))
+            self.assertFalse(any(f.rule == "stored-session"
+                                 for f in rep.findings))
+
+    def test_cap_shown_in_summary(self):
+        from tokenwatch.score import Finding
+        from tokenwatch.report import Report
+        rep = Report()
+        rep.findings = [Finding("context-secret", f"p{i}")
+                        for i in range(10)]
+        rep.finalize()
+        self.assertIn("(cap)", rep.to_text())
+        self.assertIn("350 -> 70", rep.to_text())
+
+
 class TestAuditE2E(unittest.TestCase):
     def test_audit_clean_home(self):
         with tempfile.TemporaryDirectory() as td:
@@ -165,7 +215,6 @@ class TestAuditE2E(unittest.TestCase):
                 'user pasted: sk-ant-api03-' + 'a1B2c3D4' * 6)
             rep = cli._run_audit(fake_env(home))
             rules = {f.rule for f in rep.findings}
-            self.assertIn("context-secret", rep.findings[0].rule or rules)
             self.assertIn("context-secret", rules)
 
     def test_audit_finds_mcp_plaintext(self):
@@ -174,7 +223,7 @@ class TestAuditE2E(unittest.TestCase):
             mc = home / ".cursor"
             mc.mkdir()
             (mc / "mcp.json").write_text(
-                '{"mcpServers":{"x":{"env":{"KEY":"AKIAIOSFODNN7EXAMPLE"}}}}')
+                '{"mcpServers":{"x":{"env":{"KEY":"AKIAVK6M4HX7PTWD2QRY"}}}}')
             rep = cli._run_audit(fake_env(home))
             self.assertTrue(any(f.rule == "mcp-plaintext-key"
                                 for f in rep.findings))

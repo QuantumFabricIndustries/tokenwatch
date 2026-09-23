@@ -34,9 +34,16 @@ python -m tokenwatch paths
 **audit** — inventory + permission check (POSIX mode / Windows icacls ACLs:
 flags Everyone / BUILTIN\Users / Authenticated Users on any sensitive store)
 + secret scan of context caches (provider regexes + entropy-gated generic
-assignments, placeholders excluded, secrets masked `prefix...last4`).
-`--fix` locks permissions to owner+SYSTEM+Administrators (win) / 600-700
-(posix).
+assignments; doc-example/placeholder/sequential values excluded; secrets
+masked `prefix...last4`). `--fix` locks permissions to
+owner+SYSTEM+Administrators (win) / 600-700 (posix).
+
+Findings are classified by where the secret sits: `stored-session` (+5) for
+files whose purpose is credential storage (`oauth_creds.json`, `auth.json`,
+`state.vscdb`, `.aws/credentials`…), `plaintext-token` (+25) for secrets in
+config-shaped files, `mcp-plaintext-key` (+30) in MCP configs,
+`context-secret` (+35) for leaks into transcripts/logs/history. Identical
+secret values dedupe per file.
 
 **watch** — real-time read detection on all sensitive stores + honeytokens:
 
@@ -71,6 +78,9 @@ Honeytoken read, unauthorized read/write, or ACL tamper force COMPROMISED
 regardless of score — observed theft attempt, not posture gap. Posture-only
 leaks (live keys in shell history) can still reach COMPROMISED — those creds
 should be treated as compromised and rotated.
+
+Per-rule caps keep one noisy rule from dominating; the SUMMARY block prints
+`raw -> effective (cap)` per rule so caps are never silent.
 
 ## Honest coverage boundaries
 

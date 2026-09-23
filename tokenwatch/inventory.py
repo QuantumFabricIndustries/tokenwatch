@@ -301,7 +301,8 @@ def context_files(resolved_list, max_files=4000, byte_budget=64 << 20):
 
 
 # Sensitive stores also get secret-scanned (find plaintext inside token files).
-_SCAN_ANYWAY = {"claude-code-config", "mcp-cursor", "mcp-claude-desktop",
+_SCAN_ANYWAY = {"codex-dir", "claude-code-config", "mcp-cursor",
+                "mcp-claude-desktop",
                 "mcp-windsurf", "mcp-vscode", "cursor-home", "windsurf-dir",
                 "devin-config", "aider", "continue", "gemini-cli", "zed",
                 "aws", "kube", "docker", "netrc", "git-creds", "gh-cli",
