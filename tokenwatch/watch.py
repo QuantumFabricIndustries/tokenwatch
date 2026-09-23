@@ -205,11 +205,21 @@ class WindowsEventBackend:
         return f"sacl {'add' if add else 'del'} {path}: rc={rc} {err.strip()}"
 
     def poll(self):
-        """Fetch new 4663 events touching protected roots."""
-        window_ms = int(max(60_000, (time.time() - self.last_poll + 5) * 1500))
+        """Fetch new 4663 events touching protected roots.
+
+        First poll seeds the watermark from a bounded lookback; after that
+        we query strictly by `EventRecordID > N` — Security-log events that
+        flush late still carry higher record IDs, so a time window can
+        never drop them."""
+        if self.last_record:
+            q = (f"*[System[(EventID=4663) and "
+                 f"(EventRecordID > {self.last_record})]]")
+        else:
+            window_ms = int(max(60_000,
+                                (time.time() - self.last_poll + 5) * 1500))
+            q = ("*[System[(EventID=4663) and "
+                 f"TimeCreated[timediff(@SystemTime) <= {window_ms}]]]")
         self.last_poll = time.time()
-        q = ("*[System[(EventID=4663) and "
-             f"TimeCreated[timediff(@SystemTime) <= {window_ms}]]]")
         rc, out, _ = platforms.run(
             ["wevtutil", "qe", "Security", f"/q:{q}", "/f:xml",
              "/e:Events", "/c:500", "/rd:true"], runner=self.runner)
@@ -227,6 +237,7 @@ class WindowsEventBackend:
             except ET.ParseError:
                 return []
         events = []
+        newest = self.last_record
         for ev in root.iter(f"{_EVENT_NS}Event"):
             sys_el = ev.find(f"{_EVENT_NS}System")
             data = {d.get("Name"): (d.text or "")
@@ -237,7 +248,10 @@ class WindowsEventBackend:
                 rid = int(rec.text) if rec is not None and rec.text else 0
             if rid and rid <= self.last_record:
                 continue
-            self.last_record = max(self.last_record, rid)
+            newest = max(newest, rid)   # batch update — wevtutil /rd:true
+                                        # returns NEWEST first; updating the
+                                        # watermark mid-loop would skip the
+                                        # rest of this same batch
             obj = data.get("ObjectName", "")
             if not obj or not self._in_roots(obj):
                 continue
@@ -251,6 +265,7 @@ class WindowsEventBackend:
                 process=data.get("ProcessName", "?"), pid=pid,
                 access=self._access(mask),
                 user=data.get("SubjectUserName", "")))
+        self.last_record = newest
         return events
 
     def _in_roots(self, obj):

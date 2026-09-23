@@ -59,6 +59,17 @@ class TestWindowsBackend(unittest.TestCase):
         self.assertEqual(len(events), 3)
         self.assertTrue(any(c[0] == "wevtutil" for c in r.calls))
 
+    def test_poll_queries_by_record_id_after_first(self):
+        """First poll seeds watermark via time window; later polls query
+        strictly EventRecordID > N — late-flushed events can't be dropped."""
+        r = FakeRunner(FIXTURE.read_text(encoding="utf-8"))
+        be = watch.WindowsEventBackend([ROOT], runner=r)
+        be.poll()                          # seeds last_record = 99104
+        be.poll()
+        qs = [c[3] for c in r.calls if c[0] == "wevtutil"]
+        self.assertIn("timediff", qs[0])   # windowed seed query
+        self.assertIn("EventRecordID > 99104", qs[-1])
+
     def test_install_runs_auditpol_and_sacl(self):
         r = FakeRunner()
         be = watch.WindowsEventBackend([ROOT], runner=r)

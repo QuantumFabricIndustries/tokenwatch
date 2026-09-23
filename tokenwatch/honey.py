@@ -13,13 +13,57 @@ watch-hit on a honey path is a zero-false-positive compromise signal.
 """
 import hashlib
 import json
+import os
 import secrets as _sec
+import shutil
 import time
 from pathlib import Path
 
 from . import platforms
 
 MANIFEST = "honey.json"
+
+
+def _tool_present(tool, env, runner):
+    """Is `tool` installed? runner=None -> real PATH probe; injected ->
+    `where`/`which` via the runner so tests control it."""
+    if runner is None:
+        e = env if env is not None else os.environ
+        return shutil.which(tool, path=e.get("PATH") or None) is not None
+    cmd = "where" if platforms.IS_WINDOWS else "which"
+    rc, _, _ = platforms.run([cmd, tool], runner=runner)
+    return rc == 0
+
+
+def _skip_if_tool(*tools):
+    """Guard factory: skip when a tool that AUTO-READS this path is
+    installed — a decoy at a live path would shadow real auth (aws sdk,
+    kubectl) and fire on every legitimate invocation."""
+    def guard(env, runner):
+        hit = next((t for t in tools if _tool_present(t, env, runner)),
+                   None)
+        return (f"{hit} installed — real tools auto-read this path"
+                if hit else None)
+    return guard
+
+
+def _aws_guard(env, runner):
+    r = _skip_if_tool("aws")(env, runner)
+    if r:
+        return r
+    if (platforms.home(env) / ".aws" / "config").exists():
+        return "~/.aws/config exists — env/SSO auth in use, decoy would shadow it"
+    return None
+
+
+def _git_guard(env, runner):
+    """~/.git-credentials is only auto-read when helper=store."""
+    rc, out, _ = platforms.run(
+        ["git", "config", "--global", "--get", "credential.helper"],
+        runner=runner)
+    if rc == 0 and "store" in out.lower():
+        return "credential.helper=store — git would send the decoy to hosts"
+    return None
 
 
 def _aws_creds(tok):
@@ -63,24 +107,27 @@ def _docker_cfg(tok):
         "auth": auth}}}, indent=2)
 
 
-# (decoy_id, path, generator, description)
+# (decoy_id, path, generator, description, guard)
+# guard(env, runner) -> skip reason or None. Real store paths are only
+# planted when the tool that auto-reads them isn't installed — otherwise the
+# decoy both false-positives AND hijacks the tool's auth.
 def decoys(env=None, platform=None):
     home = platforms.home(env)
     return [
         ("aws-creds", home / ".aws" / "credentials", _aws_creds,
-         "standard AWS credential path — planted only if absent"),
+         "standard AWS credential path", _aws_guard),
         ("hf-token", home / ".cache" / "huggingface" / "token", _hf_token,
-         "standard HF token path — planted only if absent"),
+         "standard HF token path", _skip_if_tool("huggingface-cli", "hf")),
         ("kube-config", home / ".kube" / "config", _kube_config,
-         "standard kubeconfig path — planted only if absent"),
+         "standard kubeconfig path", _skip_if_tool("kubectl")),
         ("docker-cfg", home / ".docker" / "config.json", _docker_cfg,
-         "standard docker auth path — planted only if absent"),
+         "standard docker auth path", _skip_if_tool("docker")),
         ("git-creds", home / ".git-credentials", _git_creds,
-         "standard git credential store — planted only if absent"),
+         "standard git credential store", _git_guard),
         ("env-backup", home / ".env.backup", _env_backup,
-         "stray env backup — classic stealer glob target"),
+         "stray env backup — classic stealer glob target", None),
         ("ssh-key-bak", home / ".ssh" / "id_rsa.bak", _ssh_key,
-         "stray key backup in .ssh — planted only if id_rsa.bak absent"),
+         "stray key backup — nothing auto-reads it", None),
     ]
 
 
@@ -108,18 +155,22 @@ def _save(state_dir, manifest):
         json.dumps(manifest, indent=2), encoding="utf-8")
 
 
-def plant(env=None, platform=None):
+def plant(env=None, platform=None, runner=None):
     """Plant all decoys. Returns (planted, skipped) lists of descriptions."""
     state = platforms.state_dir(env)
     manifest = _load(state)
     planted, skipped = [], []
-    for decoy_id, path, gen, desc in decoys(env, platform):
+    for decoy_id, path, gen, desc, guard in decoys(env, platform):
         if _key(path) in manifest:
             skipped.append(f"{decoy_id}: already planted")
             continue
         if path.exists():
             skipped.append(f"{decoy_id}: real file exists at {path} — "
                            "NOT overwriting")
+            continue
+        why = guard(env, runner) if guard else None
+        if why:
+            skipped.append(f"{decoy_id}: {why}")
             continue
         blob = gen(None).encode("utf-8")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,7 +193,7 @@ def _planted_map(env):
     """decoy_id -> (path, manifest_entry) for decoys recorded as planted."""
     manifest = _load(platforms.state_dir(env))
     out = {}
-    for decoy_id, path, gen, desc in decoys(env):
+    for decoy_id, path, gen, desc, _guard in decoys(env):
         m = manifest.get(_key(path))
         if m:
             out[decoy_id] = (path, m)

@@ -87,13 +87,22 @@ match (AND):
 Everything else that touches a watched store lands in
 `~/.tokenwatch/alerts.jsonl`.
 
-**honey** — canary credentials planted where stealers look: real store
-paths used only when vacant (`~/.aws/credentials`, `~/.kube/config`,
-`~/.docker/config.json`, `~/.git-credentials`, `~/.cache/huggingface/token`)
-plus plausible strays (`~/.env.backup`, `~/.ssh/id_rsa.bak`). Values are
-realistic-format random keys with no marker strings; the manifest is keyed
-by `sha256(path)` so `~/.tokenwatch/honey.json` reveals no locations. No
-legitimate reader exists → any access is a zero-false-positive compromise.
+**honey** — canary credentials planted where stealers look. Real store
+paths are used only when *nothing would legitimately read them*: the file
+must be absent AND the auto-reading tool must not be installed (`aws`,
+`kubectl`, `docker`, `huggingface-cli`/`hf` probed on PATH;
+`git config credential.helper` must not be `store`; an existing
+`~/.aws/config` means env/SSO auth is in use → skip). Otherwise a decoy
+would shadow real credentials and fire on every legitimate call. Strays
+(`~/.env.backup`, `~/.ssh/id_rsa.bak`) plant unconditionally — nothing
+auto-reads them. Values are realistic-format random keys with no marker
+strings; the manifest is keyed by `sha256(path)` so
+`~/.tokenwatch/honey.json` reveals no locations. Any access = a
+zero-false-positive compromise.
+
+**watch** — Windows polls Security 4663 by `EventRecordID > N` watermark
+(after a one-time 60s seed window), so events that flush late can never be
+dropped.
 
 **channel integrity** (part of `audit`) — the redirection half of the Muse
 attack: env + WinINET/WinHTTP proxies that could reroute agent traffic,

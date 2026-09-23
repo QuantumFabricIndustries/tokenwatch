@@ -102,17 +102,33 @@ class TestPermsPosix(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600)
 
 
+class ToolRunner(Runner):
+    """where/which -> rc 0 only for `tools`; git config -> `helper`."""
+    def __init__(self, tools=(), helper=""):
+        super().__init__()
+        self.tools, self.helper = set(tools), helper
+
+    def run(self, argv, timeout=30):
+        self.calls.append(list(argv))
+        if argv[0] in ("where", "which"):
+            return (0 if argv[1] in self.tools else 1), "", ""
+        if argv[0] == "git":
+            return (0, self.helper, "") if self.helper else (1, "", "")
+        return 1, "", ""
+
+
 class TestHoney(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
         self.home = Path(self.td.name)
         self.env = fake_env(self.home)
+        self.runner = ToolRunner()         # no tools installed, no helper
 
     def tearDown(self):
         self.td.cleanup()
 
     def test_plant_status_clean(self):
-        planted, skipped = honey.plant(env=self.env)
+        planted, skipped = honey.plant(env=self.env, runner=self.runner)
         self.assertTrue(len(planted) >= 4)
         rows = dict((i, s) for i, p, s in honey.status(env=self.env))
         self.assertEqual(set(rows.values()), {"ARMED"})
@@ -124,12 +140,12 @@ class TestHoney(unittest.TestCase):
         (self.home / ".aws").mkdir()
         real = self.home / ".aws" / "credentials"
         real.write_text("real creds")
-        planted, skipped = honey.plant(env=self.env)
+        planted, skipped = honey.plant(env=self.env, runner=self.runner)
         self.assertTrue(any("real file exists" in s for s in skipped))
         self.assertEqual(real.read_text(), "real creds")
 
     def test_modified_canary_flagged(self):
-        honey.plant(env=self.env)
+        honey.plant(env=self.env, runner=self.runner)
         env_file = self.home / ".env.backup"
         self.assertTrue(env_file.exists())
         env_file.write_text("tampered")
@@ -138,7 +154,7 @@ class TestHoney(unittest.TestCase):
 
     def test_manifest_hides_paths_and_no_markers(self):
         """manifest keyed by sha256(path); no marker strings anywhere."""
-        honey.plant(env=self.env)
+        honey.plant(env=self.env, runner=self.runner)
         manifest = (self.home / ".tokenwatch" / "honey.json").read_text()
         self.assertNotIn(str(self.home), manifest)   # no raw paths stored
         self.assertNotIn("TWCNRY", manifest)
@@ -149,7 +165,7 @@ class TestHoney(unittest.TestCase):
             self.assertNotIn("tokenwatch", body.lower())
 
     def test_realistic_decoy_paths(self):
-        honey.plant(env=self.env)
+        honey.plant(env=self.env, runner=self.runner)
         paths = {p.name for p in honey.honey_paths(env=self.env)}
         self.assertIn("credentials", paths)          # .aws/credentials
         self.assertIn(".env.backup", paths)

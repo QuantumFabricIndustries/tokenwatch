@@ -66,6 +66,19 @@ rathat_shield's ADB layer) so the whole control plane is unit-testable.
       files — _sacl now branches on PSIsContainer (OICI dirs / None files)
 - [x] honey clean verified; 30 SACLs removed rc=0; no leftovers
 
+## Hardening round 3 (review follow-ups)
+- [x] Honey guards: real store paths skipped when auto-reading tool exists
+      (aws/kubectl/docker/hf CLI on PATH, git helper=store, ~/.aws/config
+      present) — live plant correctly skipped kube-config (kubectl present)
+- [x] Poll by EventRecordID watermark (no time window after seed) — PLUS
+      the real fix: batch the watermark update (newest-first iteration was
+      dropping all but one event per poll — the actual cause of missing
+      cmd.exe reads, NOT flush ordering)
+- [x] Final live proof: 13 alerts — cmd/powershell/python/certutil reads of
+      planted decoys all flagged honey:true with pid attribution;
+      SearchIndexer noise allowlisted; clean + SACL removal verified
+- [x] Removed stale site-packages tokenwatch install (was shadowing repo)
+
 ## Verification
 - [x] `py -m unittest discover tests` — 69 green (2 POSIX-only skipped)
 - [x] E2E live: elevated watch caught foreign powershell read of planted

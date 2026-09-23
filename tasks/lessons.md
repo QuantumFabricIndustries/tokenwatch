@@ -48,3 +48,19 @@ always live-prove ACL/SACL code paths, fake runners lie by omission.
 Our own SACL-install powershell (WRITE_DAC) appeared in a poll seconds AFTER
 a drain poll that should have swallowed it. Don't assume a drain poll fully
 clears setup noise; expect late-arriving 4663s.
+
+## Never bump a watermark mid-loop on newest-first batches
+`wevtutil /rd:true` returns events NEWEST-first. `_parse` updated
+`last_record` inside the loop, so the first (highest-rid) event raised the
+watermark and every older event in the SAME batch was silently dropped —
+live runs produced exactly one alert per poll no matter how many reads.
+Compute max over the batch, commit once after. The ascending-order XML
+fixture hid this: fixtures must match the real tool's output ordering.
+Two live-run lessons in a row — synthetic tests verify logic, never
+the platform's actual behavior.
+
+## A stale pip install shadows the repo
+`pip show tokenwatch` revealed 0.1.0 installed in site-packages — tests run
+from `tests/` imported the OLD package (plant() without runner kwarg).
+Check `python -c "import tokenwatch; print(tokenwatch.__file__)"` when
+results look impossible.
