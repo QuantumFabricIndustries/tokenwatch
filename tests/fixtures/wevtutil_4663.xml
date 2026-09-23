@@ -1,0 +1,58 @@
+<Events>
+  <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+    <System>
+      <EventID>4663</EventID>
+      <EventRecordID>99101</EventRecordID>
+      <TimeCreated SystemTime="2026-09-23T12:00:00.000Z"/>
+    </System>
+    <EventData>
+      <Data Name="SubjectUserName">reven</Data>
+      <Data Name="ObjectName">C:\Users\reven\.aws\credentials</Data>
+      <Data Name="ProcessName">C:\Users\reven\AppData\Local\evil\stealer.exe</Data>
+      <Data Name="ProcessId">0x1F90</Data>
+      <Data Name="AccessMask">0x1</Data>
+    </EventData>
+  </Event>
+  <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+    <System>
+      <EventID>4663</EventID>
+      <EventRecordID>99102</EventRecordID>
+      <TimeCreated SystemTime="2026-09-23T12:00:01.000Z"/>
+    </System>
+    <EventData>
+      <Data Name="SubjectUserName">reven</Data>
+      <Data Name="ObjectName">C:\Users\reven\.aws\credentials</Data>
+      <Data Name="ProcessName">C:\Windows\MsMpEng.exe</Data>
+      <Data Name="ProcessId">0x300</Data>
+      <Data Name="AccessMask">0x1</Data>
+    </EventData>
+  </Event>
+  <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+    <System>
+      <EventID>4663</EventID>
+      <EventRecordID>99103</EventRecordID>
+      <TimeCreated SystemTime="2026-09-23T12:00:02.000Z"/>
+    </System>
+    <EventData>
+      <Data Name="SubjectUserName">reven</Data>
+      <Data Name="ObjectName">C:\Users\reven\.aws\credentials</Data>
+      <Data Name="ProcessName">C:\Windows\System32\evil.exe</Data>
+      <Data Name="ProcessId">0x444</Data>
+      <Data Name="AccessMask">0x40000</Data>
+    </EventData>
+  </Event>
+  <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+    <System>
+      <EventID>4663</EventID>
+      <EventRecordID>99104</EventRecordID>
+      <TimeCreated SystemTime="2026-09-23T12:00:03.000Z"/>
+    </System>
+    <EventData>
+      <Data Name="SubjectUserName">otheruser</Data>
+      <Data Name="ObjectName">C:\Users\other\Documents\notes.txt</Data>
+      <Data Name="ProcessName">C:\Windows\notepad.exe</Data>
+      <Data Name="ProcessId">0x555</Data>
+      <Data Name="AccessMask">0x1</Data>
+    </EventData>
+  </Event>
+</Events>

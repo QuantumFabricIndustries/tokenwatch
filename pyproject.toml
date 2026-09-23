@@ -1,0 +1,16 @@
+[project]
+name = "tokenwatch"
+version = "0.1.0"
+description = "AI-agent credential + cached-context theft monitor — audits where desktop agents store tokens, locks down permissions, watches for unauthorized reads, plants honeytokens"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+[project.scripts]
+tokenwatch = "tokenwatch.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["tokenwatch"]
