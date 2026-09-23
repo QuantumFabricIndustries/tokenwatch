@@ -59,7 +59,7 @@ def _aws_guard(env, runner):
 def _git_guard(env, runner):
     """~/.git-credentials is only auto-read when helper=store."""
     rc, out, _ = platforms.run(
-        ["git", "config", "--global", "--get", "credential.helper"],
+        ["git", "config", "--get", "credential.helper"],
         runner=runner)
     if rc == 0 and "store" in out.lower():
         return "credential.helper=store — git would send the decoy to hosts"
