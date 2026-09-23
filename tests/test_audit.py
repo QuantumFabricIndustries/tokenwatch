@@ -40,6 +40,13 @@ def fake_env(home, state=None):
             "TOKENWATCH_HOME": str(state or home / ".tokenwatch")}
 
 
+class NullRunner(Runner):
+    """rc 0 + empty output for everything — channel checks return nothing."""
+    def run(self, argv, timeout=30):
+        self.calls.append(list(argv))
+        return 0, "", ""
+
+
 class TestPermsWindows(unittest.TestCase):
     def test_clean_acl(self):
         r = FakeRunner(ICACLS_CLEAN)
@@ -123,10 +130,32 @@ class TestHoney(unittest.TestCase):
 
     def test_modified_canary_flagged(self):
         honey.plant(env=self.env)
-        env_file = self.home / ".tokenwatch" / "honey" / ".env"
+        env_file = self.home / ".env.backup"
+        self.assertTrue(env_file.exists())
         env_file.write_text("tampered")
         rows = dict((i, s) for i, p, s in honey.status(env=self.env))
-        self.assertEqual(rows["honey-env"], "TOUCHED/MODIFIED")
+        self.assertEqual(rows["env-backup"], "TOUCHED/MODIFIED")
+
+    def test_manifest_hides_paths_and_no_markers(self):
+        """manifest keyed by sha256(path); no marker strings anywhere."""
+        honey.plant(env=self.env)
+        manifest = (self.home / ".tokenwatch" / "honey.json").read_text()
+        self.assertNotIn(str(self.home), manifest)   # no raw paths stored
+        self.assertNotIn("TWCNRY", manifest)
+        self.assertNotIn("token_marker", manifest)
+        for p in honey.honey_paths(env=self.env):
+            body = p.read_bytes().decode("utf-8", errors="replace")
+            self.assertNotIn("TWCNRY", body)
+            self.assertNotIn("tokenwatch", body.lower())
+
+    def test_realistic_decoy_paths(self):
+        honey.plant(env=self.env)
+        paths = {p.name for p in honey.honey_paths(env=self.env)}
+        self.assertIn("credentials", paths)          # .aws/credentials
+        self.assertIn(".env.backup", paths)
+        self.assertIn("id_rsa.bak", paths)
+        self.assertNotIn("honey", {p.parent.name for p in
+                                 honey.honey_paths(env=self.env)})
 
 
 class TestScore(unittest.TestCase):
@@ -157,7 +186,7 @@ class TestClassification(unittest.TestCase):
                    "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
             (home / ".gemini" / "oauth_creds.json").write_text(
                 f'{{"access_token": "{jwt}"}}')
-            rep = cli._run_audit(fake_env(home))
+            rep = cli._run_audit(fake_env(home), runner=NullRunner())
             sess = [f for f in rep.findings if f.rule == "stored-session"]
             self.assertTrue(sess, "oauth_creds.json should be stored-session")
             self.assertFalse(any(f.rule == "plaintext-token"
@@ -170,7 +199,7 @@ class TestClassification(unittest.TestCase):
             d.mkdir(parents=True)
             tok = "hf_" + "aB3d" * 9
             (d / "s.jsonl").write_text(f"l1 {tok}\nl2 {tok}\n")
-            rep = cli._run_audit(fake_env(home))
+            rep = cli._run_audit(fake_env(home), runner=NullRunner())
             hits = [f for f in rep.findings if f.rule == "context-secret"]
             self.assertEqual(len(hits), 1, "same token counted twice")
 
@@ -181,7 +210,7 @@ class TestClassification(unittest.TestCase):
             d.mkdir(parents=True)
             (d / "rollout.json").write_text(
                 'chat: sk-ant-api03-' + 'a1B2c3D4' * 6)
-            rep = cli._run_audit(fake_env(home))
+            rep = cli._run_audit(fake_env(home), runner=NullRunner())
             self.assertTrue(any(f.rule == "context-secret"
                                 for f in rep.findings))
             self.assertFalse(any(f.rule == "stored-session"
@@ -302,7 +331,7 @@ class TestAuditE2E(unittest.TestCase):
     def test_audit_clean_home(self):
         with tempfile.TemporaryDirectory() as td:
             env = fake_env(Path(td))
-            rep = cli._run_audit(env)
+            rep = cli._run_audit(env, runner=NullRunner())
             self.assertEqual(rep.verdict, "HARDENED")
             self.assertEqual(rep.score, 0)
 
@@ -313,7 +342,7 @@ class TestAuditE2E(unittest.TestCase):
             d.mkdir(parents=True)
             (d / "sess.jsonl").write_text(
                 'user pasted: sk-ant-api03-' + 'a1B2c3D4' * 6)
-            rep = cli._run_audit(fake_env(home))
+            rep = cli._run_audit(fake_env(home), runner=NullRunner())
             rules = {f.rule for f in rep.findings}
             self.assertIn("context-secret", rules)
 
@@ -324,7 +353,7 @@ class TestAuditE2E(unittest.TestCase):
             mc.mkdir()
             (mc / "mcp.json").write_text(
                 '{"mcpServers":{"x":{"env":{"KEY":"AKIAVK6M4HX7PTWD2QRY"}}}}')
-            rep = cli._run_audit(fake_env(home))
+            rep = cli._run_audit(fake_env(home), runner=NullRunner())
             self.assertTrue(any(f.rule == "mcp-plaintext-key"
                                 for f in rep.findings))
 
@@ -332,7 +361,7 @@ class TestAuditE2E(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             env = fake_env(Path(td))
             env["OPENAI_API_KEY"] = "sk-proj-abc123"
-            rep = cli._run_audit(env)
+            rep = cli._run_audit(env, runner=NullRunner())
             self.assertTrue(any(f.rule == "env-secret"
                                 for f in rep.findings))
 

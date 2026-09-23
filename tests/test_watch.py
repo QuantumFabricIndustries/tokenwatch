@@ -10,7 +10,7 @@ ROOT = "c:\\users\\reven\\.aws"
 
 
 class FakeRunner(Runner):
-    """Returns canned wevtutil XML; records every command."""
+    """Returns canned wevtutil XML; powershell -> canned signer subject."""
     def __init__(self, xml=""):
         super().__init__()
         self.xml = xml
@@ -22,6 +22,11 @@ class FakeRunner(Runner):
         if argv[0] == "auditpol":
             return 0, "", ""
         if argv[0] == "powershell":
+            cmd = argv[-1]
+            if "Get-AuthenticodeSignature" in cmd:
+                if "Windows Defender" in cmd or "\\Windows\\" in cmd:
+                    return 0, "CN=Microsoft Windows, O=Microsoft\n", ""
+                return 0, "", ""          # unsigned/invalid -> empty subject
             return 0, "", ""
         return 0, "", ""
 
@@ -63,36 +68,72 @@ class TestWindowsBackend(unittest.TestCase):
         self.assertIn("powershell", tools)
         sacl = [c for c in r.calls if c[0] == "powershell"]
         self.assertTrue(any("AddAuditRule" in c[-1] for c in sacl))
+        # files can't take inheritance flags — script must branch on it
+        self.assertTrue(any("PSIsContainer" in c[-1] for c in sacl))
 
 
 class TestAllowlist(unittest.TestCase):
     def _ev(self, proc, pid=100, path="C:\\Users\\reven\\.aws\\credentials"):
         return watch.AccessEvent(0, path, proc, pid, "read")
 
-    def test_default_allows_defender(self):
+    def _al(self, td, runner=None):
+        return watch.Allowlist(Path(td), runner=runner, platform="windows")
+
+    def test_default_allows_defender_signed(self):
         with tempfile.TemporaryDirectory() as td:
-            al = watch.Allowlist(Path(td))
-        self.assertTrue(al.allows(self._ev("C:\\Windows\\MsMpEng.exe")))
+            al = self._al(td, FakeRunner())
+        self.assertTrue(al.allows(self._ev(
+            "C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18"
+            "\\MsMpEng.exe")))
+
+    def test_defender_unsigned_denied(self):
+        """Right name + right dir but no valid signature -> deny."""
+        with tempfile.TemporaryDirectory() as td:
+            class UnsigRunner(FakeRunner):
+                def run(self, argv, timeout=30):
+                    if argv[0] == "powershell":
+                        return 0, "", ""
+                    return super().run(argv, timeout)
+            al = self._al(td, UnsigRunner())
+        self.assertFalse(al.allows(self._ev(
+            "C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18"
+            "\\MsMpEng.exe")))
 
     def test_stealer_not_allowed(self):
         with tempfile.TemporaryDirectory() as td:
-            al = watch.Allowlist(Path(td))
+            al = self._al(td, FakeRunner())
         self.assertFalse(al.allows(self._ev("C:\\evil\\stealer.exe")))
 
-    def test_path_scoped_rule(self):
+    def test_name_spoof_in_wrong_dir_denied(self):
+        """claude.exe in %TEMP% is not Claude."""
         with tempfile.TemporaryDirectory() as td:
-            al = watch.Allowlist(Path(td))
-        ev = self._ev("C:\\x\\node.exe",
+            al = self._al(td, FakeRunner())
+        self.assertFalse(al.allows(self._ev(
+            "C:\\Users\\reven\\AppData\\Local\\Temp\\claude.exe")))
+
+    def test_agent_in_real_dir_allowed(self):
+        with tempfile.TemporaryDirectory() as td:
+            al = self._al(td, FakeRunner())
+        self.assertTrue(al.allows(self._ev(
+            "C:\\Users\\reven\\AppData\\Local\\Programs\\cursor\\Cursor.exe")))
+
+    def test_node_pinned_to_install_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            al = self._al(td, FakeRunner())
+        ok = self._ev("C:\\Program Files\\nodejs\\node.exe",
                       path="C:\\Users\\reven\\.claude\\x.json")
-        self.assertTrue(al.allows(ev))
-        ev2 = self._ev("C:\\x\\node.exe",
-                       path="C:\\Users\\reven\\.aws\\credentials")
-        self.assertFalse(al.allows(ev2))
+        bad_dir = self._ev("C:\\x\\node.exe",
+                           path="C:\\Users\\reven\\.claude\\x.json")
+        bad_obj = self._ev("C:\\Program Files\\nodejs\\node.exe",
+                           path="C:\\Users\\reven\\.aws\\credentials")
+        self.assertTrue(al.allows(ok))
+        self.assertFalse(al.allows(bad_dir))
+        self.assertFalse(al.allows(bad_obj))
 
     def test_self_pid_allowed(self):
         import os
         with tempfile.TemporaryDirectory() as td:
-            al = watch.Allowlist(Path(td))
+            al = self._al(td, FakeRunner())
         self.assertTrue(al.allows(self._ev("python.exe", pid=os.getpid())))
 
     def test_user_allowlist_file(self):
@@ -100,7 +141,7 @@ class TestAllowlist(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             cfg = Path(td) / "allowlist.json"
             cfg.write_text(json.dumps([{"name": "myagent.exe"}]))
-            al = watch.Allowlist(Path(td))
+            al = self._al(td, FakeRunner())
         self.assertTrue(al.allows(self._ev("C:\\bin\\myagent.exe")))
 
 
@@ -108,9 +149,8 @@ class TestWatcher(unittest.TestCase):
     def test_poll_once_filters_and_logs(self):
         with tempfile.TemporaryDirectory() as td:
             r = FakeRunner(FIXTURE.read_text(encoding="utf-8"))
-            w = watch.Watcher([ROOT], runner=None, env={"HOME": td},
+            w = watch.Watcher([ROOT], runner=r, env={"HOME": td},
                               platform="windows", state_dir=Path(td))
-            w.backend = watch.WindowsEventBackend([ROOT], runner=r)
             alerts = w.poll_once()
             # stealer + perm-change alert; MsMpEng allowlisted
             self.assertEqual(len(alerts), 2)

@@ -66,18 +66,40 @@ filtered, real-format keys still count.
   deletes only. **Reads are invisible in degraded mode**; the tool says so
   loudly.
 
-Allowlist at `~/.tokenwatch/allowlist.json`
-(`[{"name": "x.exe"}, {"name": "node.exe", "path_contains": ".claude"}]`);
-defaults cover OS noise (Defender, Search Indexer) and the agents' own
-binaries. Everything else that touches a watched store lands in
+Allowlist at `~/.tokenwatch/allowlist.json` — every specified field must
+match (AND):
+
+```json
+[{"name": "x.exe", "process_dir": "\\nodejs\\",
+  "path_contains": ".claude", "signer": "Node.js"}]
+```
+
+- `process_dir` anchors the exe's directory — a file renamed `node.exe` in
+  `%TEMP%` does not pass
+- `signer` resolves the Authenticode subject via
+  `Get-AuthenticodeSignature` and requires `Status=Valid` (Windows;
+  unverifiable signer → rule fails closed)
+- defaults anchor OS noise to real install dirs + Microsoft signature, and
+  agent binaries to their install directories (e.g. `Cursor.exe` only under
+  a `cursor` dir, `node.exe` only under `nodejs`/`nvm` AND only for
+  `.claude`/`.codeium` objects)
+
+Everything else that touches a watched store lands in
 `~/.tokenwatch/alerts.jsonl`.
 
-**honey** — canary credentials planted where stealers look: fake
-`~/.aws/credentials` (only if no real one exists — never overwrites), plus a
-`~/.tokenwatch/honey/` set (`.env` with sk-proj-/sk-ant- keys, fake GitHub
-PAT, fake SSH key, OAuth blob). Each canary embeds a `TWCNRY` marker for
-attribution in breach dumps. No legitimate reader exists → any access is a
-zero-false-positive compromise.
+**honey** — canary credentials planted where stealers look: real store
+paths used only when vacant (`~/.aws/credentials`, `~/.kube/config`,
+`~/.docker/config.json`, `~/.git-credentials`, `~/.cache/huggingface/token`)
+plus plausible strays (`~/.env.backup`, `~/.ssh/id_rsa.bak`). Values are
+realistic-format random keys with no marker strings; the manifest is keyed
+by `sha256(path)` so `~/.tokenwatch/honey.json` reveals no locations. No
+legitimate reader exists → any access is a zero-false-positive compromise.
+
+**channel integrity** (part of `audit`) — the redirection half of the Muse
+attack: env + WinINET/WinHTTP proxies that could reroute agent traffic,
+hosts-file remaps of provider domains (redirect or sinkhole), user-scope
+root CAs (HKCU\Root needs no admin — a classic malware move), and
+MITM-tool CAs (mitmproxy/fiddler/burp…) in the machine root store.
 
 ## Verdicts
 

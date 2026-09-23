@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import platforms, inventory, perms, secrets, honey, watch
+from . import platforms, inventory, perms, secrets, honey, watch, channel
 from .report import Report
 from .score import Finding
 
@@ -55,9 +55,13 @@ def _run_audit(env, runner=None, extra_dirs=(), fix=False):
                     print(f"  [fix] {act}", file=sys.stderr)
 
     # 2. secret scan — classified by where the secret sits:
-    #    expected credential storage (stored-session) vs actual leaks
+    #    expected credential storage (stored-session) vs actual leaks.
+    #    Our own honeytokens are realistic-looking by design — exclude them.
+    honey_set = {str(p).lower() for p in honey.honey_paths(env)}
     seen = set()
     for f in inventory.context_files(resolved):
+        if str(f).lower() in honey_set:
+            continue
         kind = _spec_kind(f, resolved)
         for hit in secrets.scan_file(f):
             key = (str(hit.path), hit.fp)   # same VALUE in one file = once
@@ -70,12 +74,13 @@ def _run_audit(env, runner=None, extra_dirs=(), fix=False):
                 detail += f" - {extra}"
             rep.findings.append(Finding(rule, str(hit.path), detail))
 
-    # 3. env exposure
+    # 3. env exposure + channel integrity (proxy/hosts/root-CA tampering)
     for name in ENV_SECRET_NAMES:
         if env.get(name):
             rep.findings.append(Finding(
                 "env-secret", f"env:{name}",
                 "set in process env - inherited by every child process"))
+    rep.findings.extend(channel.audit(env=env, runner=runner))
 
     # 4. honeytoken posture
     for decoy_id, path, st in honey.status(env=env):

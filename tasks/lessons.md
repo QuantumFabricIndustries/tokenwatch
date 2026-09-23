@@ -36,3 +36,15 @@ generic hits only on config/history-shaped files.
 
 ## Windows console is cp1252
 Em-dashes and `…` print as `?` — keep all CLI/report output ASCII.
+
+## FileSystemAuditRule: files take NO inheritance flags
+`'ContainerInherit,ObjectInherit'` throws "No flags can be set" on files —
+legal only on directories. Every file SACL silently failed while dir SACLs
+worked, and synthetic tests (fake runner, rc=0) couldn't see it. Branch on
+`(Get-Item $p).PSIsContainer`. Only the live elevated run caught this —
+always live-prove ACL/SACL code paths, fake runners lie by omission.
+
+## Security-log events lag generation
+Our own SACL-install powershell (WRITE_DAC) appeared in a poll seconds AFTER
+a drain poll that should have swallowed it. Don't assume a drain poll fully
+clears setup noise; expect late-arriving 4663s.

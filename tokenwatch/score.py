@@ -27,6 +27,13 @@ RULE_WEIGHTS = {
     "repo-secret":         40,   # .env tracked by / not ignored by git
     "context-secret":      35,   # secret leaked into transcripts/history
     "env-secret":           5,   # API key in process env — inherited widely
+    # channel integrity (proxy / hosts / root-CA tampering)
+    "proxy-env":           15,
+    "proxy-system":        30,
+    "hosts-entry":          5,   # custom non-provider mapping (review)
+    "hosts-hijack":        60,   # provider domain remapped
+    "user-root-ca":        50,   # user-scope root CA — no admin needed
+    "proxy-root-ca":       60,   # MITM-tool CA in machine root store
     "honey-missing":       10,
     # observed events (watch)
     "unauthorized-read":   50,
@@ -41,7 +48,7 @@ FORCE_COMPROMISED = {"honeytoken-read", "unauthorized-read",
 # per-rule caps so one noisy rule can't dominate
 RULE_CAPS = {"plaintext-token": 60, "context-secret": 70,
              "perm-loose-file": 80, "perm-acl-foreign": 80,
-             "stored-session": 20, "repo-secret": 80}
+             "stored-session": 20, "repo-secret": 80, "hosts-entry": 15}
 
 
 @dataclass

@@ -49,8 +49,27 @@ rathat_shield's ADB layer) so the whole control plane is unit-testable.
 - [x] README + MIT LICENSE
 - [x] Push to QuantumFabricIndustries/tokenwatch (public)
 
+## Hardening round 2
+- [x] Allowlist: AND-matched name/process_dir/process_contains/path_contains/
+      signer (Authenticode via Get-AuthenticodeSignature, cached, fail-closed)
+- [x] Honey: realistic paths (.aws/credentials, .kube/config, .docker,
+      .git-credentials, hf token, ~/.env.backup, ~/.ssh/id_rsa.bak), no
+      marker strings, manifest keyed by sha256(path); audit excludes honey
+      paths from secret scan
+- [x] channel.py: env proxies, WinINET/WinHTTP, hosts-file provider hijack/
+      sinkhole, user-scope root CAs, MITM-tool CAs — wired into audit+score
+- [x] Tests for all three (69 green) + README
+- [x] LIVE PROOF (elevated): auditpol+SACLs on 30 roots, foreign powershell
+      Get-Content on planted ~/.aws/credentials -> 4663 -> alert
+      {honey:true, read, powershell.exe, pid, user} -> alerts.jsonl
+- [x] Fixed live-run bug: FileSystemAuditRule rejects inheritance flags on
+      files — _sacl now branches on PSIsContainer (OICI dirs / None files)
+- [x] honey clean verified; 30 SACLs removed rc=0; no leftovers
+
 ## Verification
-- [x] `python -m unittest discover tests` — 42 green (2 POSIX-only skipped on win32)
+- [x] `py -m unittest discover tests` — 69 green (2 POSIX-only skipped)
+- [x] E2E live: elevated watch caught foreign powershell read of planted
+      honeytoken + WRITE_DAC perm-change on honey file -> alerts.jsonl
 - [x] `python -m tokenwatch audit` runs on this host (~13.5s)
 - [x] Honey lifecycle proven on temp HOME (plant->ARMED->tamper detect->clean)
 - [x] 4663 XML parse + allowlist + dedupe proven on fixture (stealer.exe
@@ -59,8 +78,10 @@ rathat_shield's ADB layer) so the whole control plane is unit-testable.
 ## Review
 Built 2026-09-23. Gap it fills: Muse-class theft of agent token stores +
 cached context — uncovered by gitguard/phantom-snare/iron-gates-xdr.
-- Not exercised live: actual 4663 watch (needs elevated auditpol+SACL),
-  auditd backend (no linux box), elevated icacls lockdown.
+- Open observation: `cmd /c type` reads in the live run produced no 4663s
+  while powershell Get-Content on the same object did — likely Security-log
+  flush ordering vs the 60s query window; worth a longer dwell next run.
+- Not exercised live: auditd backend (no linux box), elevated icacls lockdown.
 - Perf lesson embedded: literal-stem prefilter + per-store 64MiB
   newest-first budget took audit 163s -> 13.5s.
 - INCIDENT: `taskkill //IM python.exe` during debugging killed unrelated

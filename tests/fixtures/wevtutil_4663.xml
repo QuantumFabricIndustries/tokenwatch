@@ -22,7 +22,7 @@
     <EventData>
       <Data Name="SubjectUserName">reven</Data>
       <Data Name="ObjectName">C:\Users\reven\.aws\credentials</Data>
-      <Data Name="ProcessName">C:\Windows\MsMpEng.exe</Data>
+      <Data Name="ProcessName">C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.25090\MsMpEng.exe</Data>
       <Data Name="ProcessId">0x300</Data>
       <Data Name="AccessMask">0x1</Data>
     </EventData>

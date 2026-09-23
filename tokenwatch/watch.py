@@ -32,16 +32,44 @@ AM_DELETE = 0x10000
 AM_WRITE_DAC = 0x40000      # ACL change on a cred store — takeover signal
 AM_WRITE_OWNER = 0x80000
 
+# Every specified field must match (AND). Fields:
+#   name             basename of the accessing process
+#   process_dir      substring of the process's DIRECTORY (blocks
+#                    C:\Temp\claude.exe — name match alone is spoofable)
+#   process_contains substring of the full process path
+#   path_contains    substring of the accessed OBJECT path
+#   signer           Authenticode subject substring, status must be Valid
+#                    (Windows only; unverifiable signer => rule fails closed)
 DEFAULT_ALLOW = [
-    {"name": "msmpeng.exe"},               # Windows Defender
-    {"name": "searchindexer.exe"}, {"name": "searchprotocolhost.exe"},
-    {"name": "searchfilterhost.exe"}, {"name": "dllhost.exe"},
-    {"name": "claude.exe"}, {"name": "claude"},
-    {"name": "cursor.exe"}, {"name": "windsurf.exe"}, {"name": "zed.exe"},
-    {"name": "codex.exe"}, {"name": "devin.exe"}, {"name": "gemini.exe"},
-    {"name": "code.exe", "path_contains": "globalstorage"},
-    {"name": "node.exe", "path_contains": ".claude"},
-    {"name": "node.exe", "path_contains": ".codeium"},
+    # OS noise, path+signer anchored
+    {"name": "msmpeng.exe", "process_dir": "windows defender",
+     "signer": "Microsoft"},
+    {"name": "searchindexer.exe", "process_dir": "\\windows\\",
+     "signer": "Microsoft"},
+    {"name": "searchprotocolhost.exe", "process_dir": "\\windows\\",
+     "signer": "Microsoft"},
+    {"name": "searchfilterhost.exe", "process_dir": "\\windows\\",
+     "signer": "Microsoft"},
+    # agent binaries — real install dirs only
+    {"name": "claude.exe", "process_dir": "claude"},
+    {"name": "claude", "process_dir": "claude"},
+    {"name": "cursor.exe", "process_dir": "cursor"},
+    {"name": "windsurf.exe", "process_dir": "windsurf"},
+    {"name": "zed.exe", "process_dir": "zed"},
+    {"name": "codex.exe", "process_dir": "codex"},
+    {"name": "devin.exe", "process_dir": "devin"},
+    {"name": "gemini.exe", "process_dir": "gemini"},
+    {"name": "code.exe", "process_dir": "code",
+     "path_contains": "globalstorage"},
+    # node runtimes — pinned to real install dirs AND object scope
+    {"name": "node.exe", "process_dir": "\\nodejs\\",
+     "path_contains": ".claude"},
+    {"name": "node.exe", "process_dir": "\\nvm\\",
+     "path_contains": ".claude"},
+    {"name": "node.exe", "process_dir": "\\nodejs\\",
+     "path_contains": ".codeium"},
+    {"name": "node.exe", "process_dir": "\\nvm\\",
+     "path_contains": ".codeium"},
 ]
 
 
@@ -60,7 +88,7 @@ class AccessEvent:
 
 
 class Allowlist:
-    def __init__(self, state_dir, extra=None):
+    def __init__(self, state_dir, extra=None, runner=None, platform=None):
         self.rules = list(DEFAULT_ALLOW)
         cfg = state_dir / "allowlist.json"
         if cfg.exists():
@@ -71,24 +99,61 @@ class Allowlist:
         if extra:
             self.rules += extra
         self.self_pid = os.getpid()
+        self.runner = runner
+        self.platform = platform or platforms.PLATFORM
+        self._signer_cache = {}
 
     def allows(self, ev):
         if ev.pid and ev.pid == self.self_pid:
             return True
-        base = ev.process.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        proc_norm = ev.process.replace("/", "\\").lower()
+        base = proc_norm.rsplit("\\", 1)[-1]
+        proc_dir = (proc_norm.rsplit("\\", 1)[0] + "\\"
+                    if "\\" in proc_norm else "")
         obj = ev.path.replace("\\", "/").lower()
         for r in self.rules:
-            name = r.get("name", "").lower()
-            if name and base != name:
-                continue
-            sub = r.get("path_contains")
-            if sub and sub.lower() not in obj:
-                continue
-            psub = r.get("process_contains")
-            if psub and psub.lower() not in ev.process.lower():
+            if not self._match(r, base, proc_dir, proc_norm, obj, ev.process):
                 continue
             return True
         return False
+
+    def _match(self, r, base, proc_dir, proc_norm, obj, proc_raw):
+        name = r.get("name", "").lower()
+        if name and base != name:
+            return False
+        pdir = r.get("process_dir")
+        if pdir and pdir.lower() not in proc_dir:
+            return False
+        psub = r.get("process_contains")
+        if psub and psub.lower() not in proc_norm:
+            return False
+        sub = r.get("path_contains")
+        if sub and sub.lower() not in obj:
+            return False
+        signer = r.get("signer")
+        if signer:
+            subject = self._signer(proc_raw)
+            if not subject or signer.lower() not in subject.lower():
+                return False
+        return True
+
+    def _signer(self, exe_path):
+        """Authenticode subject CN, or None. Cached; fails closed."""
+        if exe_path in self._signer_cache:
+            return self._signer_cache[exe_path]
+        subject = None
+        if self.platform == "windows" and exe_path and "?" not in exe_path:
+            esc = exe_path.replace("'", "''")
+            ps = ("$s=Get-AuthenticodeSignature -FilePath '%s';"
+                  "if ($s.Status -eq 'Valid' -and $s.SignerCertificate)"
+                  " { $s.SignerCertificate.Subject }" % esc)
+            rc, out, _ = platforms.run(
+                ["powershell", "-NoProfile", "-NonInteractive",
+                 "-Command", ps], timeout=30, runner=self.runner)
+            if rc == 0 and out.strip():
+                subject = out.strip().splitlines()[0].strip()
+        self._signer_cache[exe_path] = subject
+        return subject
 
 
 # ------------------------------------------------------------- backends
@@ -123,16 +188,17 @@ class WindowsEventBackend:
     def _sacl(self, path, add):
         """Set/remove a Success audit rule for Everyone on `path`."""
         esc = path.replace("'", "''")
-        verb = "AddAuditRule" if add else "RemoveAuditRule"
+        verb = "AddAuditRule" if add else "RemoveAuditRuleAll"
         ps = (
             "$p='%s';"
-            "$acl=Get-Acl -Path $p -Audit;"
+            "$d=(Get-Item -LiteralPath $p -Force).PSIsContainer;"
+            "$fl=if($d){'ContainerInherit,ObjectInherit'}else{'None'};"
             "$rule=New-Object System.Security.AccessControl."
             "FileSystemAuditRule('Everyone','Read,Write,Delete,"
-            "ChangePermissions,TakeOwnership','ContainerInherit,"
-            "ObjectInherit','None','Success');"
+            "ChangePermissions,TakeOwnership',$fl,'None','Success');"
+            "$acl=Get-Acl -LiteralPath $p -Audit;"
             "$acl.%s($rule);"
-            "Set-Acl -Path $p -AclObject $acl" % (esc, verb))
+            "Set-Acl -LiteralPath $p -AclObject $acl" % (esc, verb))
         rc, out, err = platforms.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
             timeout=60, runner=self.runner)
@@ -341,9 +407,11 @@ class Watcher:
         self.state = state_dir or platforms.state_dir(self.env)
         self.state.mkdir(parents=True, exist_ok=True)
         self.honey = {str(p).lower() for p in honey_paths}
+        self.runner = runner
         self.backend = pick_backend(self.platform, paths, env=self.env,
                                     runner=runner)
-        self.allowlist = Allowlist(self.state)
+        self.allowlist = Allowlist(self.state, runner=runner,
+                                   platform=self.platform)
         self.alert_log = self.state / "alerts.jsonl"
 
     def install(self):
