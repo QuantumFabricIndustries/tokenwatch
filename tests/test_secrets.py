@@ -112,6 +112,21 @@ class TestSecrets(unittest.TestCase):
             self.assertTrue(any(h.pattern == "slack-token" for h in hits),
                             tok)
 
+    def test_entra_client_secret(self):
+        """Caught by shape anywhere (scripts, .env, notes) - not only
+        under a client_secret key - and masked by redact()."""
+        sec = "aB3" + "8Q~" + "Zx9_-.~Ab" * 3 + "Qw12"   # 3+1+Q~+31
+        hits = secrets.scan_text(f"$s = '{sec}'", "f")
+        self.assertTrue(any(h.pattern == "entra-client-secret"
+                            for h in hits))
+        red = secrets.redact(f"Connect-MgGraph -Secret {sec}")
+        self.assertNotIn(sec[6:], red)
+        # a DPAPI blob / cert thumbprint in graph.json is NOT a secret
+        clean = ('{"client_secret_dpapi": "AQAAANCMnd8BFdERjHoAwE", '
+                 '"cert_thumbprint": "' + "AB" * 20 + '"}')
+        self.assertFalse(any(h.pattern == "entra-client-secret"
+                             for h in secrets.scan_text(clean, "f")))
+
     def test_filezilla_pass(self):
         hits = secrets.scan_text(
             '<Server><Pass>Sup3rSecretFTP</Pass></Server>', "f")

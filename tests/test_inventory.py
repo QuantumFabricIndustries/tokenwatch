@@ -29,6 +29,20 @@ class TestInventory(unittest.TestCase):
         self.assertIn("aws", found)
         self.assertIn("claude-code-creds", found)
 
+    def test_tokenreplay_graph_store(self):
+        """The sibling tool's tenant-wide Graph credential is watched and
+        secret-scanned - the two tools cover each other."""
+        (self.home / ".tokenreplay").mkdir()
+        g = self.home / ".tokenreplay" / "graph.json"
+        g.write_text('{"tenant": "t"}')
+        for plat in ("windows", "linux"):
+            res = [r for r in inventory.discover(env=self.env,
+                                                 platform=plat)
+                   if r.spec.id == "tokenreplay-graph"]
+            self.assertEqual([r.path for r in res], [g], plat)
+            self.assertTrue(res[0].spec.sensitive)
+            self.assertIn(g, set(inventory.context_files(res)))
+
     def test_posix_fallback_on_windows(self):
         # dotfile stores (~/.ssh etc.) resolve on Windows too — that's where
         # they actually live under USERPROFILE

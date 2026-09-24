@@ -38,6 +38,11 @@ PROVIDER_PATTERNS = [
     ("filezilla-pass",  re.compile(r"(?i)<Pass(?:\s+encoding=\"plaintext\")?>"
                                    r"([^<]{6,})</Pass>")),
     ("stripe-key",      re.compile(r"\b[sr]k_(live|test)_[A-Za-z0-9]{16,}\b")),
+    # Entra/Azure AD app client secret (current format: 3 chars, digit,
+    # "Q~", 31-34 chars) — app-only Graph access, often tenant-wide
+    ("entra-client-secret", re.compile(
+        r"(?<![A-Za-z0-9_~.-])[A-Za-z0-9_~.]{3}\dQ~[A-Za-z0-9_~.-]{31,34}"
+        r"(?![A-Za-z0-9_~.-])")),
     ("jwt",             re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
     ("npm-token",       re.compile(r"(?i)_authToken\s*=\s*([A-Za-z0-9-]{20,})")),
     ("private-key-hdr", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY")),
@@ -56,7 +61,7 @@ _STEMS = re.compile(
     r"AKIA|gh[pousr]_|github_pat_|sk-ant-|sk-proj-|sk-svcacct-|sk-[A-Za-z0-9]"
     r"|AIza|hf_|pypi-AgEI|xox[a-z]-|xapp-|mfa\.|<Pass|[sr]k_(?:live|test)_"
     r"|[\w-]{24}\.[\w-]{6}\."          # discord 3-part token shape
-    r"|eyJ|_authToken"
+    r"|eyJ|_authToken|\dQ~"
     r"|PRIVATE KEY|private_key|[Bb]earer|api[_-]?key|apikey|secret|token"
     r"|password|passwd|pass|access[_-]?key|auth[_-]?token|client[_-]?secret",
     re.IGNORECASE)

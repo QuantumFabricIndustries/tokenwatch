@@ -464,6 +464,11 @@ STORES = [
               _p(win=["{APPDATA}/rclone/rclone.conf"],
                  posix=["{HOME}/.config/rclone/rclone.conf"]),
               "cloud storage creds (obscured, reversible)"),
+    StoreSpec("tokenreplay-graph", "tokenreplay", "config",
+              _p(posix=["{HOME}/.tokenreplay/graph.json"]),
+              "Entra app credential with AuditLog.Read.All - reads every "
+              "sign-in in the tenant; must hold cert_thumbprint or a DPAPI "
+              "blob, never a plaintext client_secret"),
     StoreSpec("doctl", "DigitalOcean", "token",
               _p(posix=["{HOME}/.config/doctl/config.yaml"]),
               "access-token dop_v1_ plaintext"),
@@ -599,7 +604,8 @@ _SCAN_ANYWAY = {"codex-dir", "claude-code-config", "mcp-cursor",
                 "opencode", "goose", "amp", "factory", "qwen-code", "kiro",
                 "discord-tokens", "slack-tokens", "filezilla", "winscp",
                 "mremote", "pgpass", "mysql-cnf", "s3cmd", "boto", "rclone",
-                "doctl", "ngrok", "nuget", "postman", "insomnia"}
+                "doctl", "ngrok", "nuget", "postman", "insomnia",
+                "tokenreplay-graph"}
 
 
 def sensitive_paths(resolved_list):
