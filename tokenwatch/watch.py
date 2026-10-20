@@ -208,16 +208,48 @@ class Allowlist:
             return True
         return False
 
+    @staticmethod
+    def _path_component_match(pattern: str, haystack: str) -> bool:
+        """Check that *pattern* appears in *haystack* as a complete path
+        segment (bounded by backslash separators on both sides).
+
+        This prevents a lookalike directory bypass where an attacker places
+        a binary at ``C:\\legit_evil\\agent.exe`` and a bare-substring check
+        like ``"legit" in "c:\\legit_evil\\"`` would incorrectly pass.
+
+        Both *pattern* and *haystack* must already be lower-cased.
+        *haystack* (proc_dir) is guaranteed to end with ``\\`` by construction
+        in ``allows()``.  We normalise *pattern* to have leading ``\\`` and
+        trailing ``\\`` so the membership test becomes a proper prefix/infix
+        check on complete directory components."""
+        # Normalise: ensure the pattern is delimited by backslashes on each
+        # side so "claude" becomes "\\claude\\" and cannot match "\\claude_evil\\".
+        p = pattern
+        if not p.startswith("\\"):
+            p = "\\" + p
+        if not p.endswith("\\"):
+            p = p + "\\"
+        return p in haystack
+
     def _match(self, r, base, proc_dir, proc_norm, obj, proc_raw):
         name = r.get("name", "").lower()
         if name and base != name:
             return False
         pdir = r.get("process_dir")
-        if pdir and pdir.lower() not in proc_dir:
-            return False
+        if pdir:
+            # Security: use component-boundary matching to prevent lookalike
+            # directory bypass (e.g. "claude" must not match "claude_evil").
+            # proc_dir always ends with "\\" so _path_component_match works
+            # correctly for both bare names ("claude") and multi-segment
+            # patterns ("\\google\\chrome\\").
+            if not self._path_component_match(pdir.lower(), proc_dir):
+                return False
         psub = r.get("process_contains")
-        if psub and psub.lower() not in proc_norm:
-            return False
+        if psub:
+            # Same boundary fix for full-path substring rules.
+            if not self._path_component_match(psub.lower(),
+                                              proc_norm + "\\"):
+                return False
         sub = r.get("path_contains")
         if sub and sub.lower() not in obj:
             return False
