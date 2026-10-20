@@ -312,6 +312,22 @@ class TestAllowlist(unittest.TestCase):
         self.assertFalse(al.allows(bad_dir))
         self.assertFalse(al.allows(bad_obj))
 
+    def test_lookalike_directory_denied(self):
+        """Lookalike directory bypass: 'claude_evil' must not satisfy the
+        'claude' process_dir rule.  A substring check ('claude' in path)
+        would pass; the fixed component-boundary check must reject it."""
+        with tempfile.TemporaryDirectory() as td:
+            al = self._al(td, FakeRunner())
+        # claude.exe in a lookalike dir — must be denied
+        self.assertFalse(al.allows(self._ev(
+            "C:\\Users\\reven\\AppData\\Local\\Programs\\claude_evil\\claude.exe")))
+        # cursor.exe in a lookalike dir — must be denied
+        self.assertFalse(al.allows(self._ev(
+            "C:\\Users\\reven\\AppData\\Local\\Programs\\cursor_evil\\Cursor.exe")))
+        # windsurf.exe in a dir that contains 'windsurf' as a substring — denied
+        self.assertFalse(al.allows(self._ev(
+            "C:\\Users\\reven\\AppData\\Local\\Programs\\notwindsurf\\windsurf.exe")))
+
     def test_self_pid_allowed(self):
         import os
         with tempfile.TemporaryDirectory() as td:
